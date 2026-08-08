@@ -1,0 +1,332 @@
+@import 'tailwindcss';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+
+@theme {
+    --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
+:root {
+    --ink: #1c2d52;
+    --ink-soft: #34405d;
+    --paper: #f8f5ed;
+    --paper-edge: #ece6d1;
+    --line: rgba(80, 102, 126, 0.16);
+    --margin-line: rgba(218, 115, 96, 0.55);
+    --gold: #f2aa35;
+    --gold-soft: #f8e5c5;
+    --card-line: #d8d2c2;
+}
+
+html,
+body {
+    min-height: 100%;
+}
+
+.study-body {
+    min-height: 100vh;
+    padding: 3.25rem;
+    color: var(--ink);
+    background: var(--paper-edge);
+    font-family: 'Instrument Sans', sans-serif;
+}
+
+.study-shell {
+    display: flex;
+    min-height: calc(100vh - 6.5rem);
+    overflow: hidden;
+    border: 1px solid rgba(28, 45, 82, 0.12);
+    border-radius: 1rem;
+    background-color: var(--paper);
+    background-image: linear-gradient(to bottom, transparent 55px, var(--line) 56px, transparent 57px);
+    background-size: 100% 56px;
+    box-shadow: 0 12px 30px rgba(28, 45, 82, 0.08);
+}
+
+.study-sidebar {
+    width: 18rem;
+    flex: 0 0 18rem;
+    color: #dce0e8;
+    background: var(--ink);
+}
+
+.study-logo-wrap {
+    padding: 2.6rem 2.25rem 2.2rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.study-logo,
+.hero-title,
+.section-title {
+    font-family: Georgia, 'Times New Roman', serif;
+}
+
+.study-logo {
+    color: #f8f6ee;
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+}
+
+.study-logo span {
+    color: var(--gold);
+}
+
+.study-nav-list {
+    display: grid;
+    gap: 0.35rem;
+    padding: 1.25rem 0;
+}
+
+.study-nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    min-height: 3.7rem;
+    padding: 0 2.25rem;
+    color: #adb4c2;
+    font-size: 1rem;
+    font-weight: 600;
+    transition: color 160ms ease, background-color 160ms ease;
+}
+
+.study-nav-link:hover,
+.study-nav-link.is-active {
+    color: #f8f6ee;
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.study-nav-link.is-active {
+    border-left: 4px solid var(--gold);
+    padding-left: calc(2.25rem - 4px);
+}
+
+.study-nav-number,
+.page-label,
+.hero-badge,
+.subject-card p {
+    font-family: 'Courier New', monospace;
+}
+
+.study-nav-number {
+    color: var(--gold);
+    font-size: 0.9rem;
+}
+
+.study-main {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    padding: 4.25rem 4.5rem 6rem;
+}
+
+.study-main::before {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 3.1rem;
+    width: 2px;
+    content: '';
+    background: var(--margin-line);
+}
+
+.page-label,
+.hero-panel,
+.subjects-section {
+    position: relative;
+    z-index: 1;
+}
+
+.page-label {
+    margin-bottom: 1rem;
+    color: #263745;
+    font-size: 0.95rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+}
+
+.hero-panel {
+    margin-bottom: 3.1rem;
+    padding: 4.5rem 3.8rem 4rem;
+    border-radius: 1.05rem;
+    color: #fff;
+    background: var(--ink);
+}
+
+.hero-badge-wrap {
+    margin-bottom: 0.9rem;
+}
+
+.hero-badge {
+    display: inline-block;
+    padding: 0.45rem 0.9rem;
+    border-radius: 999px;
+    color: #694d22;
+    background: var(--gold-soft);
+    font-size: 0.88rem;
+    font-weight: 700;
+}
+
+.hero-title {
+    max-width: 55rem;
+    margin-bottom: 1rem;
+    color: #fff;
+    font-size: clamp(2.6rem, 4vw, 4rem);
+    font-weight: 700;
+    line-height: 1.02;
+    letter-spacing: -0.025em;
+}
+
+.hero-copy {
+    max-width: 42rem;
+    margin-bottom: 2.35rem;
+    color: #cdd3dc;
+    font-size: 1.15rem;
+    line-height: 1.35;
+}
+
+.hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.primary-action,
+.secondary-action {
+    display: inline-block;
+    min-height: 3.5rem;
+    padding: 0.95rem 1.8rem;
+    border-radius: 0.55rem;
+    font-size: 1rem;
+    font-weight: 700;
+    transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.primary-action {
+    color: var(--ink);
+    background: var(--gold);
+}
+
+.primary-action:hover,
+.secondary-action:hover {
+    transform: translateY(-2px);
+}
+
+.primary-action:hover {
+    background: #ffc05b;
+}
+
+.secondary-action {
+    border: 2px solid rgba(255, 255, 255, 0.36);
+    color: #fff;
+}
+
+.secondary-action:hover {
+    border-color: rgba(255, 255, 255, 0.7);
+}
+
+.section-title {
+    margin-bottom: 1.25rem;
+    color: var(--ink);
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.subject-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.25rem;
+}
+
+.subject-card {
+    min-height: 8rem;
+    padding: 1.55rem 1.35rem;
+    border: 1px solid var(--card-line);
+    border-radius: 0.8rem;
+    background: rgba(255, 255, 255, 0.84);
+    transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.subject-card:hover {
+    border-color: var(--gold);
+    transform: translateY(-2px);
+}
+
+.subject-card p {
+    margin-bottom: 0.8rem;
+    color: #2c3e4e;
+    font-size: 0.86rem;
+    font-weight: 700;
+}
+
+.subject-card h3 {
+    color: var(--ink);
+    font-size: 1.25rem;
+    font-weight: 700;
+}
+
+@media (max-width: 900px) {
+    .study-body {
+        padding: 1rem;
+    }
+
+    .study-shell {
+        min-height: calc(100vh - 2rem);
+        flex-direction: column;
+    }
+
+    .study-sidebar {
+        width: 100%;
+        flex-basis: auto;
+    }
+
+    .study-logo-wrap {
+        padding: 1.2rem 1.4rem;
+    }
+
+    .study-nav-list {
+        display: flex;
+        overflow-x: auto;
+        padding: 0.5rem;
+    }
+
+    .study-nav-link {
+        min-width: max-content;
+        min-height: 2.8rem;
+        padding: 0 0.8rem;
+    }
+
+    .study-nav-link.is-active {
+        border-left: 0;
+        border-bottom: 3px solid var(--gold);
+        padding-left: 0.8rem;
+    }
+
+    .study-main {
+        padding: 2.5rem 1.2rem 3rem;
+    }
+
+    .study-main::before {
+        left: 0.55rem;
+    }
+
+    .hero-panel {
+        padding: 2.5rem 1.6rem;
+    }
+
+    .subject-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 520px) {
+    .subject-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .hero-title {
+        font-size: 2.35rem;
+    }
+}
