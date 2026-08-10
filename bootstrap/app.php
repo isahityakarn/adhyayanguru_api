@@ -19,6 +19,14 @@ return Application::configure(basePath: dirname(__DIR__))
                 HandleCors::class,
             ]
         );
+
+        $middleware->redirectGuestsTo(function (Request $request) {
+            if ($request->is('api/*')) {
+                return null;
+            }
+
+            return route('login');
+        });
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
