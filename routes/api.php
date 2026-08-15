@@ -1,11 +1,13 @@
 <?php
 
+use App\Http\Controllers\Api\Admin\ChapterUploadController;
 use App\Http\Controllers\Api\AiTutorController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BoardController;
 use App\Http\Controllers\Api\ChapterController;
 use App\Http\Controllers\Api\ClassLevelController;
 use App\Http\Controllers\Api\PlanController;
+use App\Http\Controllers\Api\QuestionController;
 use App\Http\Controllers\Api\SubjectController;
 use Illuminate\Support\Facades\Route;
 
@@ -16,6 +18,8 @@ Route::get('/boards', [BoardController::class, 'index']);
 Route::get('/class-levels', [ClassLevelController::class, 'index']);
 Route::get('/subjects', [SubjectController::class, 'index']);
 Route::get('/chapters', [ChapterController::class, 'index']);
+Route::get('/chapters/{id}/questions', [QuestionController::class, 'indexByChapter']);
+Route::get('/questions', [QuestionController::class, 'index']);
 Route::get('/plans', [PlanController::class, 'index']);
 
 // Protected routes
@@ -24,10 +28,45 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', [AuthController::class, 'getUser']);
     Route::get('/chapters/{id}', [ChapterController::class, 'show']);
 
-    // AI Tutor routes
+    // AI Tutor routes (support both /tutor and /ai-tutor endpoints)
     Route::prefix('ai-tutor')->group(function () {
         Route::post('/chat', [AiTutorController::class, 'chat']);
         Route::post('/explain', [AiTutorController::class, 'explainTopic']);
         Route::post('/questions', [AiTutorController::class, 'generateQuestions']);
     });
+
+    Route::prefix('tutor')->group(function () {
+        Route::post('/chat', [AiTutorController::class, 'chat']);
+        Route::post('/explain', [AiTutorController::class, 'explainTopic']);
+        Route::post('/questions', [AiTutorController::class, 'generateQuestions']);
+    });
+
+    // Admin routes
+    Route::prefix('admin')->group(function () {
+        Route::get('/stats', [ChapterUploadController::class, 'stats']);
+        Route::get('/upload', [ChapterUploadController::class, 'index']);
+        Route::get('/subjects', [ChapterUploadController::class, 'getSubjects']);
+        Route::post('/upload', [ChapterUploadController::class, 'upload']);
+        Route::get('/chapters', [ChapterUploadController::class, 'chapters']);
+        Route::get('/chapters/{id}', [ChapterUploadController::class, 'getChapter']);
+        Route::post('/chapters/{id}/reprocess', [ChapterUploadController::class, 'reprocess']);
+        Route::post('/chapters/{id}/generate-questions', [ChapterUploadController::class, 'generateMoreQuestions']);
+        Route::delete('/chapters/{id}', [ChapterUploadController::class, 'deleteChapter']);
+        Route::post('/batch-process', [ChapterUploadController::class, 'batchProcess']);
+
+        // Subjects CRUD
+        Route::get('/subjects-list', [SubjectController::class, 'adminIndex']);
+        Route::post('/subjects', [SubjectController::class, 'store']);
+        Route::get('/subjects/{id}', [SubjectController::class, 'show']);
+        Route::put('/subjects/{id}', [SubjectController::class, 'update']);
+        Route::delete('/subjects/{id}', [SubjectController::class, 'destroy']);
+
+        // Questions CRUD
+        Route::get('/questions', [QuestionController::class, 'index']);
+        Route::post('/questions', [QuestionController::class, 'store']);
+        Route::get('/questions/{id}', [QuestionController::class, 'show']);
+        Route::put('/questions/{id}', [QuestionController::class, 'update']);
+        Route::delete('/questions/{id}', [QuestionController::class, 'destroy']);
+    });
 });
+

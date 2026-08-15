@@ -8,9 +8,22 @@ Route::get('/', function () {
 
 // Serve PDF files from storage
 Route::get('/{class_id}/{subject_id}/{filename}', function ($classId, $subjectId, $filename) {
-    $path = storage_path("{$classId}/{$subjectId}/{$filename}");
+    $possiblePaths = [
+        storage_path("{$classId}/{$subjectId}/{$filename}"),
+        storage_path("app/{$classId}/{$subjectId}/{$filename}"),
+        storage_path("app/public/{$classId}/{$subjectId}/{$filename}"),
+        public_path("{$classId}/{$subjectId}/{$filename}"),
+    ];
 
-    if (! file_exists($path)) {
+    $path = null;
+    foreach ($possiblePaths as $testPath) {
+        if (file_exists($testPath)) {
+            $path = $testPath;
+            break;
+        }
+    }
+
+    if (! $path) {
         abort(404);
     }
 

@@ -73,11 +73,55 @@ class ChapterController extends Controller
 
         // Build the full source file URL
         $sourceFileUrl = null;
+        $localFilePath = null;
+
         if ($chapter->source_file_url) {
             $baseUrl = rtrim(config('app.url'), '/');
             $classId = $chapter->subject->class_id;
             $subjectId = $chapter->subject_id;
             $sourceFileUrl = "{$baseUrl}/{$classId}/{$subjectId}/{$chapter->source_file_url}";
+
+            // For local file access (relative path from public directory)
+            $localFilePath = "{$classId}/{$subjectId}/{$chapter->source_file_url}";
+        }
+
+        // Extract PDF text if available (with caching or from database)
+        $extractedText = null;
+
+        // First check if we have extracted_text in database
+        if (! empty($chapter->extracted_text)) {
+            $extractedText = $chapter->extracted_text;
+        } elseif ($localFilePath) {
+            // Otherwise extract from PDF and cache
+            $cacheKey = "chapter_text_{$id}";
+
+            // Try to get from cache (24 hour cache)
+            $extractedText = \Cache::remember($cacheKey, 86400, function () use ($localFilePath, $sourceFileUrl, $id) {
+                try {
+                    $pdfExtractor = app(\App\Services\PdfExtractorService::class);
+
+                    // Use local path instead of URL to avoid localhost timeout
+                    $text = $pdfExtractor->extractText($localFilePath);
+
+                    \Log::info('PDF text extracted and cached', [
+                        'chapter_id' => $id,
+                        'local_path' => $localFilePath,
+                        'text_length' => strlen($text ?? ''),
+                        'has_text' => ! empty($text),
+                    ]);
+
+                    return $text;
+                } catch (\Exception $e) {
+                    \Log::warning('Failed to extract PDF text', [
+                        'chapter_id' => $id,
+                        'local_path' => $localFilePath,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                    ]);
+
+                    return null;
+                }
+            });
         }
 
         return response()->json([
@@ -87,6 +131,9 @@ class ChapterController extends Controller
                 'title' => $chapter->title,
                 'description' => $chapter->description,
                 'source_file_url' => $sourceFileUrl,
+                'extracted_text' => $extractedText,
+                'content' => $extractedText, // Alias for frontend compatibility
+                'has_extracted_text' => ! empty($extractedText),
                 'subject' => [
                     'id' => $chapter->subject->id,
                     'name' => $chapter->subject->name,
@@ -99,7 +146,7 @@ class ChapterController extends Controller
                 'created_at' => $chapter->created_at,
                 'updated_at' => $chapter->updated_at,
             ],
-        ]);
+        ], 200, ['Content-Type' => 'application/json; charset=UTF-8'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 
     /**

@@ -15,8 +15,17 @@ class Chapter extends Model
         'title',
         'description',
         'source_file_url',
+        'extracted_text',
+        'questions',
+        'processed_at',
         'created_by',
     ];
+
+    protected $casts = [
+        'questions' => 'array',
+        'processed_at' => 'datetime',
+    ];
+
 
     public function subject()
     {
