@@ -105,6 +105,8 @@ class AiTutorController extends Controller
                 $aiResponse = $this->generateEducationalFallback($message, $context);
             }
 
+            $aiResponse = $this->cleanLatexMath($aiResponse);
+
             return response()->json([
                 'response' => $aiResponse,
                 'reply' => $aiResponse,
@@ -222,7 +224,9 @@ class AiTutorController extends Controller
 2. Use bullet points, bold keywords, and practical real-life examples.
 3. If the student asks a question about the chapter, answer it accurately using the textbook content.
 4. If the student asks for a summary, provide key definitions, formulas, and main takeaways.
-5. Always be positive, supportive, and encourage curiosity!";
+5. NO RAW LATEX OR DOLLAR SIGNS: Do NOT write mathematical formulas with LaTeX markup or dollar signs (e.g. NEVER write '\$10 \\text{Ones}\$' or '\$\$...\$\$'). Always write all math, equations, numbers, and place value relations in clean, readable plain text (e.g. '10 Ones (इकाई) = 1 Ten (दहाई) = 10', '10 × 10 = 100').
+6. FORMAT TABLES: When creating place value charts or tables, format them using clean markdown tables.
+7. Always be positive, supportive, and encourage curiosity!";
 
         return implode("\n", $contextParts);
     }
@@ -375,5 +379,35 @@ class AiTutorController extends Controller
             'difficulty' => $difficulty,
             'questions' => $questions ?? "1. Practice question for {$request->topic}\nAnswer: Consult chapter notes.",
         ]);
+    }
+
+    /**
+     * Clean LaTeX markup and math dollar signs from text for clean student readability.
+     */
+    private function cleanLatexMath(?string $text): string
+    {
+        if (empty($text)) {
+            return '';
+        }
+
+        // Replace \text{...}, \mathrm{...}, \mathbf{...} with the text inside
+        $cleaned = preg_replace('/\\\\(?:text|mathrm|mathbf)\{([^}]+)\}/u', '$1', $text);
+
+        // Replace common LaTeX symbols
+        $cleaned = str_replace(
+            ['\times', '\div', '\pm', '\neq', '\approx', '\cdot', '\degree'],
+            ['×', '÷', '±', '≠', '≈', '·', '°'],
+            $cleaned
+        );
+        $cleaned = preg_replace('/\\\\le(q)?\b/', '≤', $cleaned);
+        $cleaned = preg_replace('/\\\\ge(q)?\b/', '≥', $cleaned);
+        $cleaned = preg_replace('/\\\\frac\{([^}]+)\}\{([^}]+)\}/u', '($1 / $2)', $cleaned);
+        $cleaned = preg_replace('/\\\\sqrt\{([^}]+)\}/u', '√($1)', $cleaned);
+
+        // Remove LaTeX math dollar sign delimiters ($$...$$ and $...$)
+        $cleaned = preg_replace('/\$\$([\s\S]*?)\$\$/u', '$1', $cleaned);
+        $cleaned = preg_replace('/\$([^$\n]+)\$/u', '$1', $cleaned);
+
+        return $cleaned;
     }
 }
