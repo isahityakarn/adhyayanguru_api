@@ -21,6 +21,7 @@ return [
 
     'allowed_origins' => array_filter([
         env('FRONTEND_URL'),
+        'https://adhyayanguru.shop',
         'http://localhost:5173',
         'http://localhost:5174',
         'http://localhost:5175',
@@ -37,6 +38,8 @@ return [
 
     'allowed_origins_patterns' => [
         '#^http://(localhost|127\.0\.0\.1)(:\d+)?$#',
+        '#^https?://adhyayanguru\.shop$#',
+        '#^https?://.*\.adhyayanguru\.shop$#',
     ],
 
     'allowed_headers' => ['*'],
