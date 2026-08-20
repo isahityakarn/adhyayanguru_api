@@ -23,3 +23,21 @@
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
 </IfModule>
+
+# CORS Headers
+<IfModule mod_headers.c>
+    # Allow from specific origins
+    SetEnvIf Origin "https://adhyayanguru\.shop$" AccessControlAllowOrigin=$0
+    SetEnvIf Origin "https://adhyayanguruapi\.adhyayanguru\.shop$" AccessControlAllowOrigin=$0
+    SetEnvIf Origin "http://localhost(:\d+)?$" AccessControlAllowOrigin=$0
+    SetEnvIf Origin "http://127\.0\.0\.1(:\d+)?$" AccessControlAllowOrigin=$0
+
+    Header always set Access-Control-Allow-Origin "%{AccessControlAllowOrigin}e" env=AccessControlAllowOrigin
+    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+    Header always set Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+    Header always set Access-Control-Allow-Credentials "true"
+
+    # Handle preflight requests
+    RewriteCond %{REQUEST_METHOD} OPTIONS
+    RewriteRule ^(.*)$ $1 [R=200,L]
+</IfModule>
