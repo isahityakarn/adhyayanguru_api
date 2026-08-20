@@ -29,3 +29,5 @@ Thumbs.db
 .env
 .htaccess
 /.htaccess
+.agents
+/.agents
