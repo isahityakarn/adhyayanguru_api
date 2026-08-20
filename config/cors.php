@@ -20,27 +20,11 @@ return [
     'allowed_methods' => ['*'],
 
     'allowed_origins' => array_filter([
-        env('FRONTEND_URL'),
         'https://adhyayanguru.shop',
         'http://localhost:5173',
-        'http://localhost:5174',
-        'http://localhost:5175',
-        'http://localhost:5176',
-        'http://localhost:5177',
-        'http://localhost:3000',
-        'http://127.0.0.1:5173',
-        'http://127.0.0.1:5174',
-        'http://127.0.0.1:5175',
-        'http://127.0.0.1:5176',
-        'http://127.0.0.1:5177',
-        'http://127.0.0.1:3000',
     ]),
 
-    'allowed_origins_patterns' => [
-        '#^http://(localhost|127\.0\.0\.1)(:\d+)?$#',
-        '#^https?://adhyayanguru\.shop$#',
-        '#^https?://.*\.adhyayanguru\.shop$#',
-    ],
+    'allowed_origins_patterns' => [],
 
     'allowed_headers' => ['*'],
 
