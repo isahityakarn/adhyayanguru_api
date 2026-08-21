@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\Admin\ChapterUploadController;
+use App\Http\Controllers\Api\Admin\AdminDashboardController;
 use App\Http\Controllers\Api\AiTutorController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BoardController;
@@ -42,7 +43,25 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Admin routes
-    Route::prefix('admin')->group(function () {
+    Route::prefix('admin')->middleware(['admin', 'throttle:api'])->group(function () {
+        Route::get('/dashboard', [AdminDashboardController::class, 'dashboard']);
+        Route::get('/classes', [AdminDashboardController::class, 'classes']);
+        Route::get('/classes/{classId}', [AdminDashboardController::class, 'classDetails']);
+        Route::put('/classes/{classId}', [AdminDashboardController::class, 'updateClass']);
+        Route::get('/classes/{classId}/subjects', [AdminDashboardController::class, 'subjects']);
+        Route::get('/subjects/{subjectId}/chapters', [AdminDashboardController::class, 'chapters']);
+        Route::put('/chapters/{chapterId}', [AdminDashboardController::class, 'updateChapter']);
+        Route::get('/pdfs', [AdminDashboardController::class, 'pdfs']);
+        Route::post('/pdfs', [AdminDashboardController::class, 'uploadPdf']);
+        Route::put('/pdfs/{pdfId}', [AdminDashboardController::class, 'updatePdf']);
+        Route::delete('/pdfs/{pdfId}', [AdminDashboardController::class, 'deletePdf']);
+        Route::get('/pdfs/{pdfId}/preview', [AdminDashboardController::class, 'preview']);
+        Route::get('/pdfs/{pdfId}/download', [AdminDashboardController::class, 'download']);
+        Route::get('/pdfs/{pdfId}/preview/file', [AdminDashboardController::class, 'previewFile']);
+        Route::post('/pdfs/bulk-download', [AdminDashboardController::class, 'bulkDownload']);
+        Route::post('/classes/{classId}/bulk-download', [AdminDashboardController::class, 'classBulkDownload']);
+        Route::post('/subjects/{subjectId}/bulk-download', [AdminDashboardController::class, 'subjectBulkDownload']);
+        Route::get('/bulk-downloads/{filename}', [AdminDashboardController::class, 'bulkFile']);
         Route::get('/stats', [ChapterUploadController::class, 'stats']);
         Route::get('/upload', [ChapterUploadController::class, 'index']);
         Route::get('/subjects', [ChapterUploadController::class, 'getSubjects']);

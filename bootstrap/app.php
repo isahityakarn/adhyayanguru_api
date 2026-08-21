@@ -15,6 +15,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->prepend(HandleCors::class);
+        $middleware->alias(['admin' => \App\Http\Middleware\EnsureAdmin::class]);
 
         $middleware->redirectGuestsTo(function (Request $request) {
             if ($request->is('api/*')) {
@@ -28,4 +29,16 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*'),
         );
+        $exceptions->render(function (\Illuminate\Validation\ValidationException $exception, Request $request) {
+            if (! $request->is('api/*')) return null;
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $exception->errors()], 422);
+        });
+        $exceptions->render(function (\Illuminate\Database\Eloquent\ModelNotFoundException $exception, Request $request) {
+            if (! $request->is('api/*')) return null;
+            return response()->json(['success' => false, 'message' => 'Resource not found'], 404);
+        });
+        $exceptions->render(function (\Throwable $exception, Request $request) {
+            if (! $request->is('api/*') || $exception instanceof \Symfony\Component\HttpKernel\Exception\HttpException) return null;
+            return response()->json(['success' => false, 'message' => 'Something went wrong'], 500);
+        });
     })->create();
