@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\ChapterController;
 use App\Http\Controllers\Api\ClassLevelController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\QuestionController;
+use App\Http\Controllers\Api\ProgressController;
 use App\Http\Controllers\Api\SubjectController;
 use Illuminate\Support\Facades\Route;
 
@@ -22,6 +23,8 @@ Route::get('/chapters', [ChapterController::class, 'index']);
 Route::get('/chapters/{id}/questions', [QuestionController::class, 'indexByChapter']);
 Route::get('/questions', [QuestionController::class, 'index']);
 Route::get('/plans', [PlanController::class, 'index']);
+Route::post('/coqui-tts', [AiTutorController::class, 'coquiTts']);
+Route::post('/ai-tutor/coqui-tts', [AiTutorController::class, 'coquiTts']);
 
 // Protected routes
 Route::middleware('auth:sanctum')->group(function () {
@@ -29,15 +32,27 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', [AuthController::class, 'getUser']);
     Route::get('/chapters/{id}', [ChapterController::class, 'show']);
 
+    // Progress & Chapter Time Tracking & Parent Report Routes
+    Route::prefix('progress')->group(function () {
+        Route::post('/track-time', [ProgressController::class, 'trackTime']);
+        Route::post('/update', [ProgressController::class, 'updateProgress']);
+        Route::get('/chapter/{chapterId}', [ProgressController::class, 'getChapterProgress']);
+        Route::get('/parent-report', [ProgressController::class, 'parentReport']);
+        Route::get('/summary', [ProgressController::class, 'parentReport']);
+    });
+
     // AI Tutor routes (support both /tutor and /ai-tutor endpoints)
     Route::prefix('ai-tutor')->group(function () {
         Route::post('/chat', [AiTutorController::class, 'chat']);
+        Route::post('/coqui-tts', [AiTutorController::class, 'coquiTts']);
         Route::post('/explain', [AiTutorController::class, 'explainTopic']);
         Route::post('/questions', [AiTutorController::class, 'generateQuestions']);
     });
 
     Route::prefix('tutor')->group(function () {
         Route::post('/chat', [AiTutorController::class, 'chat']);
+        Route::post('/tts', [AiTutorController::class, 'tts']);
+        Route::post('/coqui-tts', [AiTutorController::class, 'coquiTts']);
         Route::post('/explain', [AiTutorController::class, 'explainTopic']);
         Route::post('/questions', [AiTutorController::class, 'generateQuestions']);
     });

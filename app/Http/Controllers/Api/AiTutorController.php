@@ -410,4 +410,48 @@ class AiTutorController extends Controller
 
         return $cleaned;
     }
+
+
+
+    /**
+     * Proxy TTS request to Coqui TTS server.
+     */
+    public function coquiTts(Request $request)
+    {
+        $text = $request->input('text') ?? '';
+        $speaker = $request->input('speaker') ?? 'Hindi Female';
+        $language = $request->input('language') ?? 'hi';
+
+        if (empty($text)) {
+            return response()->json(['message' => 'Text parameter is required.'], 422);
+        }
+
+        $coquiServerUrl = env('COQUI_TTS_SERVER_URL', 'http://localhost:5002');
+        $baseUrl = rtrim($coquiServerUrl, '/');
+
+        try {
+            $response = Http::timeout(15)->post("{$baseUrl}/api/tts", [
+                'text' => $text,
+                'speaker_wav' => $speaker,
+                'language_id' => $language,
+            ]);
+
+            if ($response->successful()) {
+                return response($response->body(), 200)
+                    ->header('Content-Type', 'audio/wav');
+            }
+
+            Log::info('Coqui TTS server offline or returned error: ' . $response->status());
+            return response()->json([
+                'message' => 'Coqui TTS server unreachable or offline.',
+            ], 503);
+        } catch (\Exception $e) {
+            Log::info('Coqui TTS Proxy Exception: ' . $e->getMessage());
+            return response()->json([
+                'message' => 'Coqui TTS server unreachable.',
+            ], 503);
+        }
+    }
 }
+
+

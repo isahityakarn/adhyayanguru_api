@@ -14,13 +14,16 @@ class ChapterController extends Controller
     public function index(Request $request)
     {
         $request->validate([
-            'subject_id' => ['required', 'exists:subjects,id'],
+            'subject_id' => ['nullable', 'exists:subjects,id'],
         ]);
 
-        $chapters = Chapter::with(['subject', 'topics'])
-            ->where('subject_id', $request->subject_id)
-            ->orderBy('chapter_number')
-            ->get();
+        $query = Chapter::with(['subject', 'topics']);
+
+        if ($request->filled('subject_id')) {
+            $query->where('subject_id', $request->subject_id);
+        }
+
+        $chapters = $query->orderBy('chapter_number')->get();
 
         return response()->json([
             'chapters' => $chapters->map(function ($chapter) {
