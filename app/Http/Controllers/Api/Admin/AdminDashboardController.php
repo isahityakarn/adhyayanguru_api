@@ -284,7 +284,22 @@ class AdminDashboardController extends Controller
 
     private function pdfData(Chapter $chapter): array
     {
-        return ['id' => $chapter->id, 'name' => $chapter->title . '.pdf', 'class_id' => $chapter->subject->class_id, 'class_name' => $chapter->subject->classLevel->name ?? 'Class', 'subject_id' => $chapter->subject_id, 'subject_name' => $chapter->subject->name, 'chapter_id' => $chapter->id, 'chapter_name' => $chapter->title, 'file_size' => $this->formatBytes($this->fileSize($chapter)), 'status' => 'available', 'preview_url' => url('/api/admin/pdfs/' . $chapter->id . '/preview'), 'download_url' => url('/api/admin/pdfs/' . $chapter->id . '/download'), 'updated_at' => optional($chapter->updated_at)->toDateString()];
+        return [
+            'id' => $chapter->id,
+            'name' => $chapter->title . '.pdf',
+            'class_id' => $chapter->subject->class_id,
+            'class_name' => $chapter->subject->classLevel->name ?? 'Class',
+            'subject_id' => $chapter->subject_id,
+            'subject_name' => $chapter->subject->name,
+            'chapter_id' => $chapter->id,
+            'chapter_number' => $chapter->chapter_number,
+            'chapter_name' => $chapter->title,
+            'file_size' => $this->formatBytes($this->fileSize($chapter)),
+            'status' => 'available',
+            'preview_url' => url('/api/admin/pdfs/' . $chapter->id . '/preview'),
+            'download_url' => url('/api/admin/pdfs/' . $chapter->id . '/download'),
+            'updated_at' => optional($chapter->updated_at)->toDateString()
+        ];
     }
 
     private function subjectData($subject): array { return ['id' => $subject->id, 'name' => $subject->name, 'chapters_count' => $subject->chapters_count ?? $subject->chapters()->count(), 'pdf_count' => $subject->pdf_count ?? $subject->chapters()->whereNotNull('source_file_url')->count()]; }
