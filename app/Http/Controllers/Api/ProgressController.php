@@ -23,47 +23,56 @@ class ProgressController extends Controller
             'status' => ['nullable', 'string', 'in:not_started,in_progress,completed'],
         ]);
 
-        $user = $request->user();
-        $chapterId = $request->chapter_id;
-        $seconds = (int) ($request->input('seconds') ?? $request->input('seconds_added') ?? 10);
+        try {
+            $user = $request->user();
+            $chapterId = $request->chapter_id;
+            $seconds = (int) ($request->input('seconds') ?? $request->input('seconds_added') ?? 10);
 
-        $progress = Progress::firstOrCreate(
-            [
-                'student_id' => $user->id,
-                'chapter_id' => $chapterId,
-            ],
-            [
-                'status' => 'in_progress',
-                'percent_complete' => 0,
-                'time_spent_seconds' => 0,
-                'last_accessed_at' => now(),
-            ]
-        );
+            $progress = Progress::firstOrCreate(
+                [
+                    'student_id' => $user->id,
+                    'chapter_id' => $chapterId,
+                ],
+                [
+                    'status' => 'in_progress',
+                    'percent_complete' => 0,
+                    'time_spent_seconds' => 0,
+                    'last_accessed_at' => now(),
+                ]
+            );
 
-        $progress->time_spent_seconds += max(0, $seconds);
-        $progress->last_accessed_at = now();
+            $progress->time_spent_seconds += max(0, $seconds);
+            $progress->last_accessed_at = now();
 
-        if ($request->filled('percent_complete')) {
-            $progress->percent_complete = max($progress->percent_complete, (int) $request->percent_complete);
-        }
-
-        if ($request->status === 'completed' || $progress->percent_complete >= 100) {
-            $progress->status = 'completed';
-            $progress->percent_complete = 100;
-            if (!$progress->completed_at) {
-                $progress->completed_at = now();
+            if ($request->filled('percent_complete')) {
+                $progress->percent_complete = max($progress->percent_complete, (int) $request->percent_complete);
             }
-        } elseif ($progress->time_spent_seconds > 0 && $progress->status !== 'completed') {
-            $progress->status = 'in_progress';
+
+            if ($request->status === 'completed' || $progress->percent_complete >= 100) {
+                $progress->status = 'completed';
+                $progress->percent_complete = 100;
+                if (!$progress->completed_at) {
+                    $progress->completed_at = now();
+                }
+            } elseif ($progress->time_spent_seconds > 0 && $progress->status !== 'completed') {
+                $progress->status = 'in_progress';
+            }
+
+            $progress->save();
+            $progress->load('chapter.subject');
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Chapter time tracked successfully.',
+                'progress' => $progress,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Progress trackTime error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to track chapter time: ' . $e->getMessage(),
+            ], 500);
         }
-
-        $progress->save();
-        $progress->load('chapter.subject');
-
-        return response()->json([
-            'message' => 'Chapter time tracked successfully.',
-            'progress' => $progress,
-        ]);
     }
 
     /**
@@ -78,50 +87,59 @@ class ProgressController extends Controller
             'time_spent_seconds' => ['nullable', 'integer', 'min:0'],
         ]);
 
-        $user = $request->user();
-        $chapterId = $request->chapter_id;
+        try {
+            $user = $request->user();
+            $chapterId = $request->chapter_id;
 
-        $progress = Progress::firstOrCreate(
-            [
-                'student_id' => $user->id,
-                'chapter_id' => $chapterId,
-            ],
-            [
-                'status' => 'not_started',
-                'percent_complete' => 0,
-                'time_spent_seconds' => 0,
-                'last_accessed_at' => now(),
-            ]
-        );
+            $progress = Progress::firstOrCreate(
+                [
+                    'student_id' => $user->id,
+                    'chapter_id' => $chapterId,
+                ],
+                [
+                    'status' => 'not_started',
+                    'percent_complete' => 0,
+                    'time_spent_seconds' => 0,
+                    'last_accessed_at' => now(),
+                ]
+            );
 
-        if ($request->has('time_spent_seconds')) {
-            $progress->time_spent_seconds = max(0, (int) $request->time_spent_seconds);
-        }
-
-        if ($request->has('percent_complete')) {
-            $progress->percent_complete = (int) $request->percent_complete;
-        }
-
-        if ($request->has('status')) {
-            $progress->status = $request->status;
-        }
-
-        if ($progress->status === 'completed' || $progress->percent_complete >= 100) {
-            $progress->status = 'completed';
-            $progress->percent_complete = 100;
-            if (!$progress->completed_at) {
-                $progress->completed_at = now();
+            if ($request->has('time_spent_seconds')) {
+                $progress->time_spent_seconds = max(0, (int) $request->time_spent_seconds);
             }
+
+            if ($request->has('percent_complete')) {
+                $progress->percent_complete = (int) $request->percent_complete;
+            }
+
+            if ($request->has('status')) {
+                $progress->status = $request->status;
+            }
+
+            if ($progress->status === 'completed' || $progress->percent_complete >= 100) {
+                $progress->status = 'completed';
+                $progress->percent_complete = 100;
+                if (!$progress->completed_at) {
+                    $progress->completed_at = now();
+                }
+            }
+
+            $progress->last_accessed_at = now();
+            $progress->save();
+            $progress->load('chapter.subject');
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Chapter progress updated successfully.',
+                'progress' => $progress,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Progress updateProgress error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update chapter progress: ' . $e->getMessage(),
+            ], 500);
         }
-
-        $progress->last_accessed_at = now();
-        $progress->save();
-        $progress->load('chapter.subject');
-
-        return response()->json([
-            'message' => 'Chapter progress updated successfully.',
-            'progress' => $progress,
-        ]);
     }
 
     /**
