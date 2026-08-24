@@ -15,6 +15,10 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->prepend(HandleCors::class);
+        $middleware->replace(
+            \Illuminate\Http\Middleware\ValidatePostSize::class,
+            \App\Http\Middleware\ValidatePostSize::class
+        );
         $middleware->alias(['admin' => \App\Http\Middleware\EnsureAdmin::class]);
 
         $middleware->redirectGuestsTo(function (Request $request) {
@@ -29,9 +33,27 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*'),
         );
+        $exceptions->render(function (\Illuminate\Auth\AuthenticationException $exception, Request $request) {
+            if (! $request->is('api/*')) return null;
+            return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+        });
+        $exceptions->render(function (\Illuminate\Auth\Access\AuthorizationException $exception, Request $request) {
+            if (! $request->is('api/*')) return null;
+            return response()->json(['success' => false, 'message' => 'Unauthorized access'], 403);
+        });
         $exceptions->render(function (\Illuminate\Validation\ValidationException $exception, Request $request) {
             if (! $request->is('api/*')) return null;
             return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $exception->errors()], 422);
+        });
+        $exceptions->render(function (\Illuminate\Http\Exceptions\PostTooLargeException $exception, Request $request) {
+            if (! $request->is('api/*')) return null;
+            return response()->json([
+                'success' => false,
+                'message' => 'The uploaded file exceeds PHP server limits (upload_max_filesize / post_max_size).',
+                'errors' => [
+                    'file' => ['File size exceeds server upload limits. Please start PHP server with -d upload_max_filesize=64M -d post_max_size=64M.'],
+                ],
+            ], 422);
         });
         $exceptions->render(function (\Illuminate\Database\Eloquent\ModelNotFoundException $exception, Request $request) {
             if (! $request->is('api/*')) return null;

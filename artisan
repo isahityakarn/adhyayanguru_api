@@ -1,6 +1,11 @@
 #!/usr/bin/env php
 <?php
 
+// Apply custom PHP INI upload limits automatically (64M upload/post max size)
+putenv('PHP_INI_SCAN_DIR=:' . __DIR__ . '/php-config');
+$_ENV['PHP_INI_SCAN_DIR'] = ':' . __DIR__ . '/php-config';
+$_SERVER['PHP_INI_SCAN_DIR'] = ':' . __DIR__ . '/php-config';
+
 use Illuminate\Foundation\Application;
 use Symfony\Component\Console\Input\ArgvInput;
 

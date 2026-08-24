@@ -10,7 +10,8 @@ class EnsureAdmin
 {
     public function handle(Request $request, Closure $next): Response
     {
-        if (! $request->user() || $request->user()->role !== 'admin') {
+        $user = $request->user();
+        if (! $user || ! in_array($user->role, ['admin', 'super_admin', '1', 1, '2', 2], true)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Administrator access is required.',

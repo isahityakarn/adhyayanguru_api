@@ -222,9 +222,63 @@ class AdminDashboardController extends Controller
 
     public function uploadPdf(Request $request, ChapterUploadController $uploader)
     {
-        $request->validate(['class_id' => ['required', 'exists:class_levels,id'], 'subject_id' => ['required', 'exists:subjects,id'], 'chapter_id' => ['nullable', 'exists:chapters,id'], 'name' => ['required', 'string', 'max:255'], 'file' => ['required', 'file', 'mimes:pdf', 'max:51200']]);
-        $request->files->set('pdf_file', $request->file('file'));
-        $request->merge(['title' => $request->input('name'), 'chapter_number' => (int) ($request->input('chapter_number') ?: Chapter::where('subject_id', $request->input('subject_id'))->max('chapter_number') + 1)]);
+        if ((!$request->filled('class_id') || $request->input('class_id') === '') && $request->filled('subject_id')) {
+            $subject = Subject::find($request->input('subject_id'));
+            if ($subject) {
+                $request->merge(['class_id' => $subject->class_id]);
+            }
+        }
+
+        if ($request->filled('chapter_id')) {
+            $chapter = Chapter::with('subject')->find($request->input('chapter_id'));
+            if ($chapter && $chapter->subject) {
+                if (!$request->filled('subject_id') || $request->input('subject_id') === '') {
+                    $request->merge(['subject_id' => $chapter->subject_id]);
+                }
+                if (!$request->filled('class_id') || $request->input('class_id') === '') {
+                    $request->merge(['class_id' => $chapter->subject->class_id]);
+                }
+            }
+        }
+
+        if (!$request->filled('class_id') || $request->input('class_id') === '') {
+            $firstClass = ClassLevel::orderBy('id')->first();
+            if ($firstClass) {
+                $request->merge(['class_id' => $firstClass->id]);
+            }
+        }
+
+        if (!$request->filled('subject_id') || $request->input('subject_id') === '') {
+            $classId = $request->input('class_id');
+            $firstSubject = Subject::where('class_id', $classId)->first() ?: Subject::orderBy('id')->first();
+            if ($firstSubject) {
+                $request->merge(['subject_id' => $firstSubject->id, 'class_id' => $firstSubject->class_id]);
+            }
+        }
+
+        $request->validate([
+            'class_id' => ['required', 'exists:class_levels,id'],
+            'subject_id' => ['required', 'exists:subjects,id'],
+            'chapter_id' => ['nullable', 'exists:chapters,id'],
+            'name' => ['sometimes', 'string', 'max:255'],
+            'title' => ['sometimes', 'string', 'max:255'],
+            'file' => ['sometimes', 'file', 'mimes:pdf', 'max:51200'],
+            'pdf_file' => ['sometimes', 'file', 'mimes:pdf', 'max:51200'],
+        ]);
+
+        if (!$request->hasFile('pdf_file') && count($request->allFiles()) > 0) {
+            $allFiles = $request->allFiles();
+            $request->files->set('pdf_file', reset($allFiles));
+        }
+
+        $title = $request->input('title', $request->input('name'));
+        $chapterNumber = (int) ($request->input('chapter_number') ?: Chapter::where('subject_id', $request->input('subject_id'))->max('chapter_number') + 1);
+
+        $request->merge([
+            'title' => $title,
+            'chapter_number' => $chapterNumber,
+        ]);
+
         return $uploader->upload($request);
     }
 

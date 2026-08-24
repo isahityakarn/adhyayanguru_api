@@ -89,18 +89,24 @@ class ChapterUploadController extends Controller
      */
     public function upload(Request $request)
     {
-        $hasFile = $request->hasFile('pdf_file');
-        $hasBase64 = $request->filled('pdf_base64');
+        $allFiles = $request->allFiles();
+        $pdfFile = $request->file('pdf_file') ?: ($request->file('file') ?: ($request->file('pdf') ?: (reset($allFiles) ?: null)));
+        $rawBase64 = $request->input('pdf_base64') ?: ($request->input('file_base64') ?: ($request->input('base64') ?: null));
+
+        $hasFile = $pdfFile !== null;
+        $hasBase64 = !empty($rawBase64);
 
         if (!$hasFile && !$hasBase64) {
-            // Check if PHP discarded file due to upload_max_filesize
-            if (isset($_FILES['pdf_file']) && $_FILES['pdf_file']['error'] === UPLOAD_ERR_INI_SIZE) {
-                return response()->json([
-                    'message' => 'The uploaded PDF file exceeded PHP upload limits. Please retry with the automatic in-browser uploader.',
-                    'errors' => [
-                        'pdf_file' => ['File size exceeds server upload limits. Automatic base64 mode will now process it.'],
-                    ],
-                ], 422);
+            // Check if PHP discarded file due to upload_max_filesize across any upload field
+            foreach ($_FILES as $f) {
+                if (isset($f['error']) && $f['error'] === UPLOAD_ERR_INI_SIZE) {
+                    return response()->json([
+                        'message' => 'The uploaded PDF file exceeded PHP upload limits. Please retry with the automatic in-browser uploader.',
+                        'errors' => [
+                            'pdf_file' => ['File size exceeds server upload limits. Automatic base64 mode will now process it.'],
+                        ],
+                    ], 422);
+                }
             }
 
             return response()->json([
@@ -109,6 +115,28 @@ class ChapterUploadController extends Controller
                     'pdf_file' => ['The PDF document is required.'],
                 ],
             ], 422);
+        }
+
+        if ((!$request->filled('class_id') || $request->input('class_id') === '') && $request->filled('subject_id')) {
+            $subject = Subject::find($request->input('subject_id'));
+            if ($subject) {
+                $request->merge(['class_id' => $subject->class_id]);
+            }
+        }
+
+        if (!$request->filled('class_id') || $request->input('class_id') === '') {
+            $firstClass = ClassLevel::orderBy('id')->first();
+            if ($firstClass) {
+                $request->merge(['class_id' => $firstClass->id]);
+            }
+        }
+
+        if (!$request->filled('subject_id') || $request->input('subject_id') === '') {
+            $classId = $request->input('class_id');
+            $firstSubject = Subject::where('class_id', $classId)->first() ?: Subject::orderBy('id')->first();
+            if ($firstSubject) {
+                $request->merge(['subject_id' => $firstSubject->id, 'class_id' => $firstSubject->class_id]);
+            }
         }
 
         $request->validate([
@@ -141,11 +169,10 @@ class ChapterUploadController extends Controller
                 File::makeDirectory($targetDir2, 0775, true, true);
             }
 
-            if ($hasFile) {
-                $pdfFile = $request->file('pdf_file');
+            if ($hasFile && $pdfFile) {
                 $originalName = pathinfo($pdfFile->getClientOriginalName(), PATHINFO_FILENAME);
                 $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $originalName);
-                $filename = 'chapter_' . time() . '_' . $safeName . '.' . $pdfFile->getClientOriginalExtension();
+                $filename = 'chapter_' . time() . '_' . $safeName . '.' . ($pdfFile->getClientOriginalExtension() ?: 'pdf');
 
                 // Move file to storage path
                 $pdfFile->move($targetDir1, $filename);
@@ -157,7 +184,6 @@ class ChapterUploadController extends Controller
                 $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $originalName);
                 $filename = 'chapter_' . time() . '_' . $safeName . '.pdf';
 
-                $rawBase64 = $request->input('pdf_base64');
                 $cleanBase64 = preg_replace('#^data:application/\w+;base64,#i', '', $rawBase64);
                 $binaryData = base64_decode($cleanBase64);
 
