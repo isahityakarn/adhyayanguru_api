@@ -22,6 +22,7 @@ return [
     'allowed_origins' => array_filter([
         'https://adhyayanguru.shop',
         'http://localhost:5173',
+        'http://localhost:5174',
     ]),
 
     'allowed_origins_patterns' => [],
