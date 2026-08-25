@@ -10,11 +10,26 @@ use Illuminate\Http\Request;
 
 class SubjectController extends Controller
 {
+    private function sanitizeFilterInputs(Request $request)
+    {
+        foreach (['class_id', 'board_id'] as $key) {
+            if ($request->has($key)) {
+                $val = $request->input($key);
+                if (is_null($val) || ! is_numeric($val) || (int) $val <= 0 || in_array(strtolower(trim((string) $val)), ['undefined', 'null', 'nan', ''])) {
+                    $request->request->remove($key);
+                    $request->query->remove($key);
+                }
+            }
+        }
+    }
+
     /**
      * Display a listing of the resource (public / student).
      */
     public function index(Request $request)
     {
+        $this->sanitizeFilterInputs($request);
+
         $request->validate([
             'class_id' => ['nullable', 'exists:class_levels,id'],
             'board_id' => ['nullable', 'exists:boards,id'],
@@ -59,6 +74,8 @@ class SubjectController extends Controller
      */
     public function adminIndex(Request $request)
     {
+        $this->sanitizeFilterInputs($request);
+
         $query = Subject::with(['classLevel', 'board'])->withCount('chapters');
 
         if ($request->filled('class_id')) {

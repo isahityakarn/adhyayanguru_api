@@ -126,6 +126,16 @@ class AdminDashboardController extends Controller
 
     public function pdfs(Request $request)
     {
+        foreach (['subject_id', 'chapter_id', 'class_id'] as $key) {
+            if ($request->has($key)) {
+                $val = $request->input($key);
+                if (is_null($val) || ! is_numeric($val) || (int) $val <= 0 || in_array(strtolower(trim((string) $val)), ['undefined', 'null', 'nan', ''])) {
+                    $request->request->remove($key);
+                    $request->query->remove($key);
+                }
+            }
+        }
+
         $query = Chapter::with(['subject.classLevel'])->whereNotNull('source_file_url');
         foreach (['subject_id' => 'subject_id', 'chapter_id' => 'id'] as $filter => $column) {
             if (! $request->filled($filter)) continue;

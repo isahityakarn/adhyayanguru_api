@@ -8,11 +8,26 @@ use Illuminate\Http\Request;
 
 class ChapterController extends Controller
 {
+    private function sanitizeFilterInputs(Request $request)
+    {
+        foreach (['subject_id', 'class_id'] as $key) {
+            if ($request->has($key)) {
+                $val = $request->input($key);
+                if (is_null($val) || ! is_numeric($val) || (int) $val <= 0 || in_array(strtolower(trim((string) $val)), ['undefined', 'null', 'nan', ''])) {
+                    $request->request->remove($key);
+                    $request->query->remove($key);
+                }
+            }
+        }
+    }
+
     /**
      * Display a listing of the resource.
      */
     public function index(Request $request)
     {
+        $this->sanitizeFilterInputs($request);
+
         $request->validate([
             'subject_id' => ['nullable', 'exists:subjects,id'],
         ]);
@@ -34,8 +49,8 @@ class ChapterController extends Controller
                     'description' => $chapter->description,
                     'source_file_url' => $chapter->source_file_url,
                     'subject' => [
-                        'id' => $chapter->subject->id,
-                        'name' => $chapter->subject->name,
+                        'id' => $chapter->subject->id ?? null,
+                        'name' => $chapter->subject->name ?? '',
                     ],
                     'topics_count' => $chapter->topics->count(),
                     'created_at' => $chapter->created_at,
@@ -59,20 +74,13 @@ class ChapterController extends Controller
     {
         $user = $request->user();
 
-        if (! $user || ! $user->studentProfile) {
+        if (! $user) {
             return response()->json([
-                'message' => 'Student profile not found.',
-            ], 403);
+                'message' => 'Unauthenticated.',
+            ], 401);
         }
 
         $chapter = Chapter::with(['subject.classLevel', 'topics'])->findOrFail($id);
-
-        // Check if the chapter's subject class matches the user's class
-        if ($chapter->subject->class_id !== $user->studentProfile->class_id) {
-            return response()->json([
-                'message' => 'You do not have access to this chapter.',
-            ], 403);
-        }
 
         // Build the full source file URL
         $sourceFileUrl = null;
@@ -80,7 +88,7 @@ class ChapterController extends Controller
 
         if ($chapter->source_file_url) {
             $baseUrl = rtrim(config('app.url'), '/');
-            $classId = $chapter->subject->class_id;
+            $classId = $chapter->subject->class_id ?? 1;
             $subjectId = $chapter->subject_id;
             $sourceFileUrl = "{$baseUrl}/{$classId}/{$subjectId}/{$chapter->source_file_url}";
 

@@ -71,11 +71,12 @@ class ChapterUploadController extends Controller
      */
     public function getSubjects(Request $request)
     {
-        $request->validate([
-            'class_id' => ['required', 'exists:class_levels,id'],
-        ]);
+        $classId = $request->input('class_id');
+        if (! is_numeric($classId) || (int) $classId <= 0 || in_array(strtolower(trim((string) $classId)), ['undefined', 'null', 'nan', ''])) {
+            return response()->json(['subjects' => []]);
+        }
 
-        $subjects = Subject::where('class_id', $request->class_id)
+        $subjects = Subject::where('class_id', $classId)
             ->orderBy('name')
             ->get();
 
@@ -440,6 +441,16 @@ class ChapterUploadController extends Controller
      */
     public function chapters(Request $request)
     {
+        foreach (['class_id', 'subject_id'] as $key) {
+            if ($request->has($key)) {
+                $val = $request->input($key);
+                if (is_null($val) || ! is_numeric($val) || (int) $val <= 0 || in_array(strtolower(trim((string) $val)), ['undefined', 'null', 'nan', ''])) {
+                    $request->request->remove($key);
+                    $request->query->remove($key);
+                }
+            }
+        }
+
         $query = Chapter::with(['subject.classLevel', 'questions']);
 
         if ($request->has('class_id') && ! empty($request->class_id)) {
