@@ -452,6 +452,71 @@ class AiTutorController extends Controller
             ], 503);
         }
     }
+
+    /**
+     * Proxy TTS request to Hugging Face Edge-TTS Space (innoai/Edge-TTS-Text-to-Speech).
+     */
+    public function edgeTts(Request $request)
+    {
+        $text = $request->input('text') ?? '';
+        $speaker = $request->input('speaker') ?? 'hi-IN-SwaraNeural - hi-IN (Female)';
+        $rate = (int) ($request->input('rate') ?? 0);
+        $pitch = (int) ($request->input('pitch') ?? 0);
+
+        if (empty($text)) {
+            return response()->json(['message' => 'Text parameter is required.'], 422);
+        }
+
+        try {
+            $hfUrl = 'https://innoai-edge-tts-text-to-speech.hf.space/gradio_api/call/tts_interface';
+
+            $postResponse = Http::timeout(15)->post($hfUrl, [
+                'data' => [$text, $speaker, $rate, $pitch],
+            ]);
+
+            if (!$postResponse->successful()) {
+                Log::warning('HF Edge-TTS POST returned: ' . $postResponse->status());
+                return response()->json(['message' => 'Edge TTS space unreachable.'], 503);
+            }
+
+            $eventId = $postResponse->json('event_id');
+            if (empty($eventId)) {
+                return response()->json(['message' => 'No event ID from Edge TTS space.'], 503);
+            }
+
+            $streamResponse = Http::timeout(20)->get("{$hfUrl}/{$eventId}");
+            if (!$streamResponse->successful()) {
+                return response()->json(['message' => 'Failed to read audio stream from Edge TTS space.'], 503);
+            }
+
+            $streamText = $streamResponse->body();
+            $lines = explode("\n", $streamText);
+
+            for ($i = 0; $i < count($lines); $i++) {
+                if (str_starts_with($lines[$i], 'event: complete')) {
+                    $dataLine = $lines[$i + 1] ?? '';
+                    if (str_starts_with($dataLine, 'data: ')) {
+                        $rawJson = substr($dataLine, 6);
+                        $parsed = json_decode($rawJson, true);
+                        $audioUrl = $parsed[0]['url'] ?? null;
+                        if (!empty($audioUrl)) {
+                            return response()->json([
+                                'message' => 'Success',
+                                'audio_url' => $audioUrl,
+                                'speaker' => $speaker,
+                            ]);
+                        }
+                    }
+                }
+            }
+
+            return response()->json(['message' => 'Could not extract audio URL from Edge TTS response.'], 500);
+        } catch (\Exception $e) {
+            Log::info('Edge TTS Proxy Exception: ' . $e->getMessage());
+            return response()->json(['message' => 'Edge TTS request exception.'], 500);
+        }
+    }
 }
+
 
 

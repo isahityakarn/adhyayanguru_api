@@ -25,6 +25,8 @@ Route::get('/questions', [QuestionController::class, 'index']);
 Route::get('/plans', [PlanController::class, 'index']);
 Route::post('/coqui-tts', [AiTutorController::class, 'coquiTts']);
 Route::post('/ai-tutor/coqui-tts', [AiTutorController::class, 'coquiTts']);
+Route::post('/edge-tts', [AiTutorController::class, 'edgeTts']);
+Route::post('/ai-tutor/edge-tts', [AiTutorController::class, 'edgeTts']);
 
 // Protected routes
 Route::middleware('auth:sanctum')->group(function () {
@@ -45,6 +47,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('ai-tutor')->group(function () {
         Route::post('/chat', [AiTutorController::class, 'chat']);
         Route::post('/coqui-tts', [AiTutorController::class, 'coquiTts']);
+        Route::post('/edge-tts', [AiTutorController::class, 'edgeTts']);
         Route::post('/explain', [AiTutorController::class, 'explainTopic']);
         Route::post('/questions', [AiTutorController::class, 'generateQuestions']);
     });
@@ -53,6 +56,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/chat', [AiTutorController::class, 'chat']);
         Route::post('/tts', [AiTutorController::class, 'tts']);
         Route::post('/coqui-tts', [AiTutorController::class, 'coquiTts']);
+        Route::post('/edge-tts', [AiTutorController::class, 'edgeTts']);
         Route::post('/explain', [AiTutorController::class, 'explainTopic']);
         Route::post('/questions', [AiTutorController::class, 'generateQuestions']);
     });
