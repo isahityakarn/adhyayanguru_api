@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\EmailOtp;
 use App\Models\Plan;
 use App\Models\StudentProfile;
 use App\Models\StudentSubscription;
@@ -10,6 +11,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
@@ -107,6 +109,108 @@ class AuthController extends Controller
         ]);
     }
 
+    public function sendOtp(Request $request)
+    {
+        $request->validate([
+            'email' => ['required', 'string', 'email', 'max:255'],
+            'name' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $email = strtolower(trim($request->email));
+        $studentName = trim($request->name ?? '') ?: 'Student';
+
+        if (User::where('email', $email)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'An account with this email already exists. Please login.',
+                'errors' => ['email' => ['An account with this email already exists. Please login.']]
+            ], 422);
+        }
+
+        $otp = str_pad((string) random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
+        $expiresAt = now()->addMinutes(10);
+
+        EmailOtp::updateOrCreate(
+            ['email' => $email],
+            ['otp' => $otp, 'expires_at' => $expiresAt]
+        );
+
+        try {
+            Mail::send([], [], function ($message) use ($email, $otp, $studentName) {
+                $message->to($email)
+                    ->subject("Your Registration OTP - AdhyayanGuru")
+                    ->html("
+                        <div style='font-family: Arial, sans-serif; max-width: 550px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff; color: #1e293b;'>
+                            <h2 style='color: #0f172a; margin-top: 0; font-size: 22px;'>AdhyayanGuru</h2>
+                            <hr style='border: none; border-top: 1px solid #e2e8f0; margin: 16px 0;'>
+                            
+                            <p style='font-size: 15px; margin-bottom: 16px;'>Dear {$studentName},</p>
+                            <p style='font-size: 15px; line-height: 1.5; margin-bottom: 12px;'>Thank you for signing up with us.</p>
+                            <p style='font-size: 15px; line-height: 1.5; margin-bottom: 20px;'>To complete your student registration, please use the One-Time Password (OTP) below:</p>
+                            
+                            <div style='text-align: center; margin: 24px 0;'>
+                                <div style='display: inline-block; background-color: #f1f5f9; color: #0f172a; font-size: 30px; font-weight: bold; letter-spacing: 6px; padding: 12px 28px; border-radius: 8px; border: 2px dashed #0284c7;'>
+                                    {$otp}
+                                </div>
+                            </div>
+                            
+                            <p style='font-size: 14px; line-height: 1.5; color: #334155; margin-bottom: 16px;'>This OTP is valid for <strong>10 minutes</strong>. Please do not share this OTP with anyone.</p>
+                            <p style='font-size: 14px; line-height: 1.5; color: #64748b; margin-bottom: 24px;'>If you did not request this OTP, you can safely ignore this email.</p>
+                            
+                            <hr style='border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;'>
+                            <p style='font-size: 14px; margin: 0; color: #334155;'>Regards,</p>
+                            <p style='font-size: 14px; font-weight: bold; margin: 4px 0 0 0; color: #0f172a;'>Student Support Team</p>
+                            <p style='font-size: 14px; font-weight: bold; margin: 2px 0 0 0; color: #0284c7;'>AdhyayanGuru</p>
+                        </div>
+                    ");
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Verification code sent to ' . $email,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to send OTP email: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function verifyOtp(Request $request)
+    {
+        $request->validate([
+            'email' => ['required', 'string', 'email'],
+            'otp' => ['required', 'string', 'min:6', 'max:6'],
+        ]);
+
+        $email = strtolower(trim($request->email));
+        $otp = trim($request->otp);
+
+        $record = EmailOtp::where('email', $email)->where('otp', $otp)->first();
+
+        if (! $record) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid verification code. Please check and try again.',
+                'errors' => ['otp' => ['Invalid verification code.']]
+            ], 422);
+        }
+
+        if (now()->greaterThan($record->expires_at)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Verification code has expired. Please request a new code.',
+                'errors' => ['otp' => ['Verification code has expired.']]
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Email verified successfully.',
+        ]);
+    }
+
     public function signup(Request $request)
     {
         $validated = $request->validate([
@@ -119,7 +223,17 @@ class AuthController extends Controller
             'board_id' => ['required', 'exists:boards,id'],
             'school_name' => ['nullable', 'string', 'max:160'],
             'plan_id' => ['nullable', 'exists:plans,id'],
+            'otp' => ['required', 'string', 'min:6', 'max:6'],
         ]);
+
+        $email = strtolower(trim($validated['email']));
+        $otpRecord = EmailOtp::where('email', $email)->where('otp', trim($validated['otp']))->first();
+        if (! $otpRecord || now()->greaterThan($otpRecord->expires_at)) {
+            throw ValidationException::withMessages([
+                'otp' => ['Invalid or expired verification code. Please request a new code.'],
+            ]);
+        }
+        $otpRecord->delete();
 
         DB::beginTransaction();
 
@@ -146,22 +260,30 @@ class AuthController extends Controller
                 'last_active_date' => null,
             ]);
 
-            // Create student subscription if plan_id is provided
-            if (isset($validated['plan_id'])) {
-                $plan = Plan::findOrFail($validated['plan_id']);
-                $startDate = now();
-                $endDate = $plan->duration_days > 0
-                    ? $startDate->copy()->addDays($plan->duration_days)
-                    : null;
+            // Automatically assign Free plan subscription if plan_id is not specified
+            $planId = $validated['plan_id'] ?? null;
+            if (! $planId) {
+                $freePlan = Plan::where('price_inr', 0)->first() ?: Plan::find(1);
+                $planId = $freePlan ? $freePlan->id : 1;
+            }
 
-                StudentSubscription::create([
-                    'student_id' => $user->id,
-                    'plan_id' => $validated['plan_id'],
-                    'start_date' => $startDate,
-                    'end_date' => $endDate,
-                    'status' => 'active',
-                    'payment_ref' => null,
-                ]);
+            if ($planId) {
+                $plan = Plan::find($planId);
+                if ($plan) {
+                    $startDate = now();
+                    $endDate = $plan->duration_days > 0
+                        ? $startDate->copy()->addDays($plan->duration_days)
+                        : null;
+
+                    StudentSubscription::create([
+                        'student_id' => $user->id,
+                        'plan_id' => $plan->id,
+                        'start_date' => $startDate,
+                        'end_date' => $endDate,
+                        'status' => 'active',
+                        'payment_ref' => 'FREE_WELCOME_PLAN',
+                    ]);
+                }
             }
 
             DB::commit();

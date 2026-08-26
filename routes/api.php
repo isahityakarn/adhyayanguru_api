@@ -14,6 +14,10 @@ use App\Http\Controllers\Api\SubjectController;
 use Illuminate\Support\Facades\Route;
 
 // Public routes
+Route::post('/send-otp', [AuthController::class, 'sendOtp']);
+Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
+Route::post('/auth/send-otp', [AuthController::class, 'sendOtp']);
+Route::post('/auth/verify-otp', [AuthController::class, 'verifyOtp']);
 Route::post('/signup', [AuthController::class, 'signup']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::get('/boards', [BoardController::class, 'index']);
