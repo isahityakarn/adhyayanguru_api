@@ -92,7 +92,7 @@ class AiTutorController extends Controller
 
         try {
             // Build the context for the AI
-            $systemContext = $this->buildSystemContext($context);
+            $systemContext = $this->buildSystemContext($context, $message);
 
             // Build conversation history
             $conversationHistory = $this->buildConversationHistory(
@@ -294,14 +294,14 @@ class AiTutorController extends Controller
     /**
      * Build system context based on the provided context data.
      */
-    private function buildSystemContext(?array $context): string
+    private function buildSystemContext(?array $context, string $message = ''): string
     {
         $voiceId = strtolower($context['voice_id'] ?? $context['voice'] ?? 'edge_tts_hindi_female');
         $isFemale = str_contains($voiceId, 'female') || str_contains($voiceId, 'swara');
         $tutorName = $isFemale ? 'Sanskriti' : 'Adhyayan';
 
         if (! $context) {
-            return "You are {$tutorName}, a friendly, encouraging, and highly knowledgeable AI tutor for Indian school students (CBSE / ICSE / State Boards). Explain concepts clearly with simple step-by-step examples.";
+            return "You are {$tutorName}, a friendly, encouraging, and highly knowledgeable AI tutor for Indian school students (CBSE / ICSE / State Boards). Explain concepts clearly with simple step-by-step examples in Hindi or English as requested.";
         }
 
         $contextParts = [
@@ -331,12 +331,20 @@ class AiTutorController extends Controller
             $contextParts[] = "Textbook chapter content is provided below. Use this as your primary source of truth to teach the student:\n\n{$content}\n";
         }
 
-        // Language preference
-        $lang = strtolower($context['language'] ?? 'en');
-        if (str_starts_with($lang, 'hi')) {
-            $contextParts[] = 'Language instruction: Reply in simple, clear Hindi (हिन्दी) or Hinglish as requested by the student.';
+        // Language preference detection
+        $lang = strtolower($context['language'] ?? '');
+        $combinedText = strtolower($message . ' ' . ($context['message'] ?? ''));
+
+        $isHindiRequested = str_starts_with($lang, 'hi') ||
+            str_contains($voiceId, 'hindi') ||
+            str_contains($voiceId, 'swara') ||
+            str_contains($voiceId, 'madhur') ||
+            preg_match('/(hindi|हिंदी|हिन्दी|hinglish|samjhao|batao|spasht|explain in hindi|in hindi|kya hai|kaise)/i', $combinedText);
+
+        if ($isHindiRequested) {
+            $contextParts[] = "CRITICAL LANGUAGE INSTRUCTION: The student wants explanations in HINDI (हिन्दी). You MUST write your entire explanation and response in clear, simple, warm HINDI (हिन्दी) script. Do NOT write in English!";
         } else {
-            $contextParts[] = 'Language instruction: Reply in clear, simple English, using standard Indian educational terminology.';
+            $contextParts[] = "LANGUAGE INSTRUCTION: Reply in simple, clear Hindi (हिन्दी) or English based on the language used by the student in their message.";
         }
 
         $contextParts[] = "\nTUTOR GUIDELINES:
