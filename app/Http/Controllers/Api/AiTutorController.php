@@ -180,12 +180,16 @@ class AiTutorController extends Controller
      */
     private function buildSystemContext(?array $context): string
     {
+        $voiceId = strtolower($context['voice_id'] ?? $context['voice'] ?? 'edge_tts_hindi_female');
+        $isFemale = str_contains($voiceId, 'female') || str_contains($voiceId, 'swara');
+        $tutorName = $isFemale ? 'Sanskriti' : 'Adhyayan';
+
         if (! $context) {
-            return 'You are Adhyayan, a friendly, encouraging, and highly knowledgeable AI tutor for Indian school students (CBSE / ICSE / State Boards). Explain concepts clearly with simple step-by-step examples.';
+            return "You are {$tutorName}, a friendly, encouraging, and highly knowledgeable AI tutor for Indian school students (CBSE / ICSE / State Boards). Explain concepts clearly with simple step-by-step examples.";
         }
 
         $contextParts = [
-            'You are Adhyayan, a friendly, encouraging, and highly knowledgeable AI tutor for Indian school students (CBSE / ICSE / State Boards).',
+            "You are {$tutorName}, a friendly, encouraging, and highly knowledgeable AI tutor for Indian school students (CBSE / ICSE / State Boards).",
         ];
 
         if (!empty($context['subject'])) {
@@ -237,6 +241,7 @@ class AiTutorController extends Controller
     private function buildConversationHistory(array $history, string $systemContext): array
     {
         $messages = [];
+        $tutorName = str_contains(strtolower($systemContext), 'sanskriti') ? 'Sanskriti' : 'Adhyayan';
 
         // Add system context as the first user message with model response
         $messages[] = [
@@ -246,7 +251,7 @@ class AiTutorController extends Controller
 
         $messages[] = [
             'role' => 'model',
-            'parts' => [['text' => 'Namaste! I am Adhyayan, your AI Tutor. I understand your instructions and I am ready to help the student learn with clear explanations, examples, and warm encouragement!']],
+            'parts' => [['text' => "Namaste! I am {$tutorName}, your AI Tutor. I understand your instructions and I am ready to help the student learn with clear explanations, examples, and warm encouragement!"]],
         ];
 
         // Add conversation history
@@ -274,9 +279,12 @@ class AiTutorController extends Controller
         $subject = $context['subject'] ?? 'the subject';
         $chapter = $context['chapter'] ?? 'this chapter';
         $isHindi = str_starts_with(strtolower($context['language'] ?? 'en'), 'hi');
+        $voiceId = strtolower($context['voice_id'] ?? $context['voice'] ?? 'edge_tts_hindi_female');
+        $isFemale = str_contains($voiceId, 'female') || str_contains($voiceId, 'swara');
+        $tutorName = $isFemale ? ($isHindi ? 'संस्कृति' : 'Sanskriti') : ($isHindi ? 'अध्ययन' : 'Adhyayan');
 
         if ($isHindi) {
-            return "नमस्ते! मैं अध्ययन हूँ। आपके प्रश्न **\"{$message}\"** के संदर्भ में:\n\n" .
+            return "नमस्ते! मैं {$tutorName} हूँ। आपके प्रश्न **\"{$message}\"** के संदर्भ में:\n\n" .
                 "📚 **विषय:** {$subject}\n" .
                 "📖 **अध्याय:** {$chapter}\n\n" .
                 "इस अवधारणा को समझने के लिए मुख्य बिंदु:\n" .
@@ -286,7 +294,7 @@ class AiTutorController extends Controller
                 "यदि आप किसी विशिष्ट परिभाषा, सूत्र या प्रश्न का हल चाहते हैं, तो कृपया नीचे विस्तार से पूछें!";
         }
 
-        return "Hello! I am Adhyayan, your AI Tutor. Regarding your question: **\"{$message}\"**\n\n" .
+        return "Hello! I am {$tutorName}, your AI Tutor. Regarding your question: **\"{$message}\"**\n\n" .
             "📚 **Subject:** {$subject}\n" .
             "📖 **Chapter:** {$chapter}\n\n" .
             "### Key Learning Points:\n" .
