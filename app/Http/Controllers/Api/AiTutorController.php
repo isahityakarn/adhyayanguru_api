@@ -15,12 +15,12 @@ class AiTutorController extends Controller
      * Gemini models in order of priority.
      */
     private array $candidateModels = [
-        'gemini-3.5-flash',
-        'gemini-3.5-flash-lite',
-        'gemini-3.7-flash',
-        'gemini-flash-latest',
-        'gemini-flash-lite-latest',
-        'gemini-pro-latest',
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash',
+        'gemini-1.5-pro',
+        'gemini-2.0-flash-lite-preview-02-05',
+        'gemini-1.5-flash-8b',
     ];
 
     /**
@@ -41,12 +41,18 @@ class AiTutorController extends Controller
             $context = [];
         }
 
-        // If top-level chapter_content / chapter_id provided, merge into context
+        // Merge top-level fields into context
         if ($request->filled('chapter_id') && !isset($context['chapter_id'])) {
             $context['chapter_id'] = $request->input('chapter_id');
         }
         if ($request->filled('chapter') && !isset($context['chapter'])) {
             $context['chapter'] = $request->input('chapter');
+        }
+        if ($request->filled('subject') && !isset($context['subject'])) {
+            $context['subject'] = $request->input('subject');
+        }
+        if ($request->filled('subject_name') && !isset($context['subject'])) {
+            $context['subject'] = $request->input('subject_name');
         }
         if ($request->filled('subject_id') && !isset($context['subject_id'])) {
             $context['subject_id'] = $request->input('subject_id');
@@ -58,11 +64,19 @@ class AiTutorController extends Controller
             $context['language'] = $request->input('language');
         }
 
-        // If chapter_id is provided but no extracted text in context, load it from DB
-        if (!empty($context['chapter_id']) && empty($context['chapter_content'])) {
+        // Always resolve subject name if subject_id is provided
+        if (!empty($context['subject_id']) && empty($context['subject'])) {
+            $subjectModel = Subject::find($context['subject_id']);
+            if ($subjectModel) {
+                $context['subject'] = $subjectModel->name;
+            }
+        }
+
+        // Always resolve chapter & subject from DB if chapter_id is provided
+        if (!empty($context['chapter_id'])) {
             $chapterModel = Chapter::with('subject')->find($context['chapter_id']);
             if ($chapterModel) {
-                if (!empty($chapterModel->extracted_text)) {
+                if (empty($context['chapter_content']) && !empty($chapterModel->extracted_text)) {
                     $context['chapter_content'] = $chapterModel->extracted_text;
                 }
                 if (empty($context['chapter']) && !empty($chapterModel->title)) {
@@ -92,16 +106,22 @@ class AiTutorController extends Controller
                 'parts' => [['text' => $message]],
             ];
 
-            // Call Gemini API with resilient multi-model fallback
-            $aiResponse = $this->callGeminiApi($conversationHistory, [
-                'temperature' => 0.7,
-                'topK' => 40,
-                'topP' => 0.95,
-                'maxOutputTokens' => 2048,
-            ]);
+            // 1. Primary AI Engine: Hugging Face Qwen 2.5 (Gradio Space / HF API)
+            $aiResponse = $this->callHuggingFaceQwenSpace($conversationHistory, $systemContext);
 
+            // 2. Secondary AI Engine: Fallback to Google Gemini API if Qwen is unreachable
             if (empty($aiResponse)) {
-                // If API is temporarily rate limited or unreachable, synthesize educational response
+                Log::info('Qwen 2.5 HF model offline or rate limited. Falling back to Google Gemini API...');
+                $aiResponse = $this->callGeminiApi($conversationHistory, [
+                    'temperature' => 0.7,
+                    'topK' => 40,
+                    'topP' => 0.95,
+                    'maxOutputTokens' => 2048,
+                ]);
+            }
+
+            // 3. Tertiary Fallback: Smart Educational Fallback
+            if (empty($aiResponse)) {
                 $aiResponse = $this->generateEducationalFallback($message, $context);
             }
 
@@ -125,6 +145,102 @@ class AiTutorController extends Controller
                 'message' => 'Response generated with tutor assistance.',
             ]);
         }
+    }
+
+    /**
+     * Call Hugging Face Qwen 2.5 Gradio Space / HF Inference API as Primary AI Engine.
+     */
+    private function callHuggingFaceQwenSpace(array $conversationHistory, string $systemContext): ?string
+    {
+        $hfApiKey = env('HUGGINGFACE_API_KEY');
+
+        // Formulate messages for OpenAI/HuggingFace chat format
+        $hfMessages = [];
+        $hfMessages[] = [
+            'role' => 'system',
+            'content' => $systemContext,
+        ];
+
+        foreach ($conversationHistory as $msg) {
+            $role = ($msg['role'] ?? '') === 'model' ? 'assistant' : ($msg['role'] ?? 'user');
+            $text = $msg['parts'][0]['text'] ?? $msg['content'] ?? '';
+            if (!empty($text) && $role !== 'system') {
+                $hfMessages[] = [
+                    'role' => $role,
+                    'content' => (string) $text,
+                ];
+            }
+        }
+
+        // Method 1: Try Hugging Face Chat Completions Endpoint (Router & Direct API)
+        $hfEndpoints = [
+            'https://router.huggingface.co/hf-inference/v1/chat/completions',
+            'https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct/v1/chat/completions',
+            'https://api-inference.huggingface.co/models/meta-llama/Llama-3.3-70B-Instruct/v1/chat/completions',
+        ];
+
+        foreach ($hfEndpoints as $endpoint) {
+            try {
+                $headers = ['Content-Type' => 'application/json'];
+                if (!empty($hfApiKey)) {
+                    $headers['Authorization'] = 'Bearer ' . $hfApiKey;
+                }
+
+                $response = Http::timeout(18)
+                    ->withHeaders($headers)
+                    ->post($endpoint, [
+                        'model' => 'Qwen/Qwen2.5-72B-Instruct',
+                        'messages' => $hfMessages,
+                        'temperature' => 0.7,
+                        'max_tokens' => 2048,
+                    ]);
+
+                if ($response->successful()) {
+                    $json = $response->json();
+                    $reply = $json['choices'][0]['message']['content'] ?? null;
+                    if (!empty($reply)) {
+                        Log::info("HF Qwen API success from endpoint: {$endpoint}");
+                        return trim($reply);
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::warning("HF Qwen Chat Completions Exception on {$endpoint}: " . $e->getMessage());
+            }
+        }
+
+        // Method 2: Try Hugging Face Gradio Space (Qwen 2.5 Gradio Space Proxy)
+        try {
+            $gradioUrl = env('HF_QWEN_GRADIO_SPACE_URL', 'https://qwen-qwen2-5-72b-instruct.hf.space/gradio_api/call/predict');
+            
+            $lastUserMessage = end($hfMessages)['content'] ?? '';
+            $postResponse = Http::timeout(12)->post($gradioUrl, [
+                'data' => [$lastUserMessage, [], $systemContext],
+            ]);
+
+            if ($postResponse->successful()) {
+                $eventId = $postResponse->json('event_id');
+                if (!empty($eventId)) {
+                    $streamResponse = Http::timeout(18)->get("{$gradioUrl}/{$eventId}");
+                    if ($streamResponse->successful()) {
+                        $lines = explode("\n", $streamResponse->body());
+                        for ($i = count($lines) - 1; $i >= 0; $i--) {
+                            if (str_starts_with($lines[$i], 'data: ')) {
+                                $parsed = json_decode(substr($lines[$i], 6), true);
+                                $text = $parsed[0] ?? $parsed['text'] ?? null;
+                                if (!empty($text) && is_string($text)) {
+                                    Log::info('Qwen 2.5 Gradio Space response success');
+                                    return trim($text);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (\Exception $ex) {
+            Log::warning('HF Qwen Gradio Space Exception: ' . $ex->getMessage());
+        }
+
+        return null;
     }
 
     /**
@@ -276,32 +392,62 @@ class AiTutorController extends Controller
      */
     private function generateEducationalFallback(string $message, array $context): string
     {
-        $subject = $context['subject'] ?? 'the subject';
-        $chapter = $context['chapter'] ?? 'this chapter';
-        $isHindi = str_starts_with(strtolower($context['language'] ?? 'en'), 'hi');
+        $subject = !empty($context['subject']) && $context['subject'] !== 'the subject' ? $context['subject'] : 'सामान्य अध्ययन';
+        $chapter = !empty($context['chapter']) && $context['chapter'] !== 'this chapter' ? $context['chapter'] : 'अध्याय';
+        $isHindi = str_starts_with(strtolower($context['language'] ?? 'hi'), 'hi');
         $voiceId = strtolower($context['voice_id'] ?? $context['voice'] ?? 'edge_tts_hindi_female');
         $isFemale = str_contains($voiceId, 'female') || str_contains($voiceId, 'swara');
         $tutorName = $isFemale ? ($isHindi ? 'संस्कृति' : 'Sanskriti') : ($isHindi ? 'अध्ययन' : 'Adhyayan');
 
-        if ($isHindi) {
-            return "नमस्ते! मैं {$tutorName} हूँ। आपके प्रश्न **\"{$message}\"** के संदर्भ में:\n\n" .
-                "📚 **विषय:** {$subject}\n" .
-                "📖 **अध्याय:** {$chapter}\n\n" .
-                "इस अवधारणा को समझने के लिए मुख्य बिंदु:\n" .
-                "1. **मूल सिद्धांत (Core Concept):** यह विषय अध्याय के आधारभूत नियमों पर आधारित है।\n" .
-                "2. **महत्वपूर्ण बिंदु:** परिभाषाओं और उदाहरणों को ध्यान से पढ़ें।\n" .
-                "3. **अभ्यास:** संबंधित प्रश्नों को हल करके अपनी समझ को परखें।\n\n" .
-                "यदि आप किसी विशिष्ट परिभाषा, सूत्र या प्रश्न का हल चाहते हैं, तो कृपया नीचे विस्तार से पूछें!";
+        $contentSummary = "";
+        if (!empty($context['chapter_content'])) {
+            $rawText = strip_tags($context['chapter_content']);
+            $rawText = preg_replace('/\[सिस्टम संदेश:[^\]]+\]/u', '', $rawText);
+            $rawText = trim($rawText);
+            if (strlen($rawText) > 400) {
+                $contentSummary = substr($rawText, 0, 400) . "...";
+            } else if (!empty($rawText)) {
+                $contentSummary = $rawText;
+            }
         }
 
-        return "Hello! I am {$tutorName}, your AI Tutor. Regarding your question: **\"{$message}\"**\n\n" .
+        if ($isHindi) {
+            $reply = "नमस्ते! मैं {$tutorName} हूँ, आपकी AI शिक्षिका।\n\n" .
+                "📚 **विषय:** {$subject}\n" .
+                "📖 **अध्याय:** {$chapter}\n\n";
+
+            if (!empty($contentSummary)) {
+                $reply .= "### अध्याय का मुख्य सारांश:\n" .
+                    "{$contentSummary}\n\n" .
+                    "### मुख्य बिंदु:\n" .
+                    "1. **मूल अवधारणाएं:** इस अध्याय में दिए गए मुख्य सिद्धांतों, सूत्रों और परिभाषाओं को समझें।\n" .
+                    "2. **अभ्यास प्रश्न:** अध्याय के अंत में दिए गए प्रश्नों को हल करने का प्रयास करें।\n\n" .
+                    "आप मुझसे इस अध्याय के किसी भी प्रश्न या परिभाषा के बारे में पूछ सकते हैं!";
+            } else {
+                $reply .= "### अध्याय की मुख्य बातें:\n" .
+                    "1. **अवधारणा (Concept):** यह अध्याय **{$chapter}** के मुख्य विषयों को प्रस्तुत करता है।\n" .
+                    "2. **महत्वपूर्ण बिंदु:** परिभाषाओं, सूत्रों और आरेखों (Diagrams) पर विशेष ध्यान दें।\n" .
+                    "3. **प्रश्न उत्तर:** इस अध्याय से संबंधित किसी भी विशिष्ट प्रश्न को मुझसे पूछें, मैं विस्तार से समझाऊंगी!";
+            }
+            return $reply;
+        }
+
+        $reply = "Hello! I am {$tutorName}, your AI Tutor.\n\n" .
             "📚 **Subject:** {$subject}\n" .
-            "📖 **Chapter:** {$chapter}\n\n" .
-            "### Key Learning Points:\n" .
-            "1. **Core Concept:** Review the fundamental definitions and principles covered in this section.\n" .
-            "2. **Step-by-Step Understanding:** Break complex problems down into smaller, manageable parts.\n" .
-            "3. **Practical Application:** Connect the theory to real-world examples from everyday life.\n\n" .
-            "Feel free to ask specific questions about any formula, exercise problem, or summary from this chapter!";
+            "📖 **Chapter:** {$chapter}\n\n";
+
+        if (!empty($contentSummary)) {
+            $reply .= "### Chapter Summary:\n" .
+                "{$contentSummary}\n\n" .
+                "Feel free to ask me specific questions about any formula, definition, or exercise problem from this chapter!";
+        } else {
+            $reply .= "### Key Overview of {$chapter}:\n" .
+                "1. **Core Concept:** Review the fundamental definitions and key principles in this chapter.\n" .
+                "2. **Step-by-Step Understanding:** Focus on practice exercises and key formulas.\n\n" .
+                "Feel free to ask me any specific question about this chapter!";
+        }
+
+        return $reply;
     }
 
     /**
