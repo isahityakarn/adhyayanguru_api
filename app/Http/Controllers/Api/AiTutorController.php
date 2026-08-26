@@ -15,12 +15,12 @@ class AiTutorController extends Controller
      * Gemini models in order of priority.
      */
     private array $candidateModels = [
-        'gemini-2.5-flash',
-        'gemini-2.0-flash',
-        'gemini-1.5-flash',
-        'gemini-1.5-pro',
-        'gemini-2.0-flash-lite-preview-02-05',
-        'gemini-1.5-flash-8b',
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
+        'gemini-flash-latest',
+        'gemini-pro-latest',
+        'gemini-2.5-pro',
     ];
 
     /**
@@ -106,18 +106,18 @@ class AiTutorController extends Controller
                 'parts' => [['text' => $message]],
             ];
 
-            // 1. Primary AI Engine: Hugging Face Qwen 2.5 (Gradio Space / HF API)
-            $aiResponse = $this->callHuggingFaceQwenSpace($conversationHistory, $systemContext);
+            // 1. Primary AI Engine: Google Gemini API (gemini-3.6-flash)
+            $aiResponse = $this->callGeminiApi($conversationHistory, [
+                'temperature' => 0.7,
+                'topK' => 40,
+                'topP' => 0.95,
+                'maxOutputTokens' => 2048,
+            ]);
 
-            // 2. Secondary AI Engine: Fallback to Google Gemini API if Qwen is unreachable
+            // 2. Secondary AI Engine: Fallback to Hugging Face Qwen 2.5
             if (empty($aiResponse)) {
-                Log::info('Qwen 2.5 HF model offline or rate limited. Falling back to Google Gemini API...');
-                $aiResponse = $this->callGeminiApi($conversationHistory, [
-                    'temperature' => 0.7,
-                    'topK' => 40,
-                    'topP' => 0.95,
-                    'maxOutputTokens' => 2048,
-                ]);
+                Log::info('Gemini API unreachable, falling back to Hugging Face Qwen...');
+                $aiResponse = $this->callHuggingFaceQwenSpace($conversationHistory, $systemContext);
             }
 
             // 3. Tertiary Fallback: Smart Educational Fallback
@@ -331,20 +331,36 @@ class AiTutorController extends Controller
             $contextParts[] = "Textbook chapter content is provided below. Use this as your primary source of truth to teach the student:\n\n{$content}\n";
         }
 
-        // Language preference detection
-        $lang = strtolower($context['language'] ?? '');
+        // PDF / Chapter Content Language Detection
+        $pdfContent = $context['chapter_content'] ?? '';
+        $isPdfHindi = !empty($pdfContent) && preg_match('/\p{Devanagari}/u', $pdfContent);
+
         $combinedText = strtolower($message . ' ' . ($context['message'] ?? ''));
 
-        $isHindiRequested = str_starts_with($lang, 'hi') ||
-            str_contains($voiceId, 'hindi') ||
-            str_contains($voiceId, 'swara') ||
-            str_contains($voiceId, 'madhur') ||
-            preg_match('/(hindi|हिंदी|हिन्दी|hinglish|samjhao|batao|spasht|explain in hindi|in hindi|kya hai|kaise)/i', $combinedText);
+        // Check if user requested "read", "read this", "read this chapter", "padho", "padao", etc.
+        $isReadIntent = preg_match('/\b(read|read this|read chapter|read this chapter|padho|padao|padh ke|padh kar|padhein|recite|explain this pdf|explain pdf|read pdf|padh ke batao)\b/i', $combinedText);
 
-        if ($isHindiRequested) {
-            $contextParts[] = "CRITICAL LANGUAGE INSTRUCTION: The student wants explanations in HINDI (हिन्दी). You MUST write your entire explanation and response in clear, simple, warm HINDI (हिन्दी) script. Do NOT write in English!";
+        $lang = strtolower($context['language'] ?? '');
+        $isExplicitHindiRequested = preg_match('/(hindi|हिंदी|हिन्दी|explain in hindi|in hindi)/i', $combinedText);
+
+        if ($isReadIntent && !empty($pdfContent) && !$isExplicitHindiRequested) {
+            if ($isPdfHindi) {
+                $contextParts[] = "CRITICAL READ ALOUD INSTRUCTION: The student explicitly asked you to READ the chapter ('{$message}'). You MUST read out the actual textbook content and paragraphs provided below in HINDI (हिन्दी) script. Do NOT just give a high-level summary, chapter outline, or topic list. Read out the text of the chapter directly paragraph-by-paragraph so the student can listen to it and follow along!";
+            } else {
+                $contextParts[] = "CRITICAL READ ALOUD INSTRUCTION: The student explicitly asked you to READ the chapter ('{$message}'). You MUST read out the actual textbook content and paragraphs provided below in ENGLISH. Do NOT just give a high-level summary, chapter outline, or topic list. Read out the text of the chapter directly paragraph-by-paragraph so the student can listen to it and follow along!";
+            }
         } else {
-            $contextParts[] = "LANGUAGE INSTRUCTION: Reply in simple, clear Hindi (हिन्दी) or English based on the language used by the student in their message.";
+            $isHindiRequested = str_starts_with($lang, 'hi') ||
+                str_contains($voiceId, 'hindi') ||
+                str_contains($voiceId, 'swara') ||
+                str_contains($voiceId, 'madhur') ||
+                preg_match('/(hindi|हिंदी|हिन्दी|hinglish|samjhao|batao|spasht|explain in hindi|in hindi|kya hai|kaise)/i', $combinedText);
+
+            if ($isHindiRequested) {
+                $contextParts[] = "CRITICAL LANGUAGE INSTRUCTION: The student wants explanations in HINDI (हिन्दी). You MUST write your entire explanation and response in clear, simple, warm HINDI (हिन्दी) script. Do NOT write in English!";
+            } else {
+                $contextParts[] = "LANGUAGE INSTRUCTION: Reply in simple, clear Hindi (हिन्दी) or English based on the language used by the student in their message or the textbook content.";
+            }
         }
 
         $contextParts[] = "\nTUTOR GUIDELINES:

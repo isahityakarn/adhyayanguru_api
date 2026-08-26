@@ -162,12 +162,20 @@ class ChapterUploadController extends Controller
             $relativeDir = "{$request->class_id}/{$request->subject_id}";
             $targetDir1 = storage_path($relativeDir);
             $targetDir2 = storage_path("app/{$relativeDir}");
+            $targetDir3 = storage_path("app/public/{$relativeDir}");
+            $targetDir4 = public_path("{$relativeDir}");
 
-            if (! File::exists($targetDir1)) {
-                File::makeDirectory($targetDir1, 0775, true, true);
+            foreach ([$targetDir1, $targetDir2, $targetDir3, $targetDir4] as $dir) {
+                if (! File::exists($dir)) {
+                    File::makeDirectory($dir, 0775, true, true);
+                }
             }
-            if (! File::exists($targetDir2)) {
-                File::makeDirectory($targetDir2, 0775, true, true);
+
+            // Ensure public class symlink exists for direct Nginx web server access
+            $publicClassDir = public_path((string)$request->class_id);
+            $storageClassDir = storage_path("app/{$request->class_id}");
+            if (! File::exists($publicClassDir) && File::exists($storageClassDir)) {
+                @symlink($storageClassDir, $publicClassDir);
             }
 
             if ($hasFile && $pdfFile) {
@@ -175,9 +183,11 @@ class ChapterUploadController extends Controller
                 $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $originalName);
                 $filename = 'chapter_' . time() . '_' . $safeName . '.' . ($pdfFile->getClientOriginalExtension() ?: 'pdf');
 
-                // Move file to storage path
+                // Move file to storage path and duplicate to all target paths
                 $pdfFile->move($targetDir1, $filename);
                 File::copy("{$targetDir1}/{$filename}", "{$targetDir2}/{$filename}");
+                File::copy("{$targetDir1}/{$filename}", "{$targetDir3}/{$filename}");
+                File::copy("{$targetDir1}/{$filename}", "{$targetDir4}/{$filename}");
             } else {
                 // Base64 upload
                 $originalName = $request->input('pdf_name', 'chapter_' . $request->chapter_number);
@@ -196,6 +206,8 @@ class ChapterUploadController extends Controller
 
                 File::put("{$targetDir1}/{$filename}", $binaryData);
                 File::put("{$targetDir2}/{$filename}", $binaryData);
+                File::put("{$targetDir3}/{$filename}", $binaryData);
+                File::put("{$targetDir4}/{$filename}", $binaryData);
             }
 
             // Create or update chapter record
@@ -518,7 +530,7 @@ class ChapterUploadController extends Controller
         $chapter = Chapter::with(['subject.classLevel', 'pages', 'topics'])->findOrFail($id);
         $questions = Question::where('chapter_id', $chapter->id)->get();
 
-        $baseUrl = rtrim(config('app.url', 'http://localhost:8000'), '/');
+        $baseUrl = rtrim($request->schemeAndHttpHost() ?: config('app.url', 'http://localhost:8000'), '/');
         $fileUrl = null;
         if ($chapter->source_file_url && $chapter->subject) {
             $fileUrl = "{$baseUrl}/{$chapter->subject->class_id}/{$chapter->subject_id}/{$chapter->source_file_url}";

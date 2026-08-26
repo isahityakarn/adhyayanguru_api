@@ -87,7 +87,7 @@ class ChapterController extends Controller
         $localFilePath = null;
 
         if ($chapter->source_file_url) {
-            $baseUrl = rtrim(config('app.url'), '/');
+            $baseUrl = rtrim($request->schemeAndHttpHost() ?: config('app.url'), '/');
             $classId = $chapter->subject->class_id ?? 1;
             $subjectId = $chapter->subject_id;
             $sourceFileUrl = "{$baseUrl}/{$classId}/{$subjectId}/{$chapter->source_file_url}";
