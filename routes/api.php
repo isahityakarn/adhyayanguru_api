@@ -11,6 +11,8 @@ use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\QuestionController;
 use App\Http\Controllers\Api\ProgressController;
 use App\Http\Controllers\Api\SubjectController;
+use App\Http\Controllers\Api\QuizController;
+use App\Http\Controllers\Api\Admin\AdminQuizController;
 use Illuminate\Support\Facades\Route;
 
 // Public routes
@@ -36,6 +38,13 @@ Route::post('/ai-tutor/edge-tts', [AiTutorController::class, 'edgeTts']);
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/user', [AuthController::class, 'getUser']);
+
+    // Chapter Quiz System Routes (Student)
+    Route::get('/chapters/{chapterId}/completion', [QuizController::class, 'getChapterCompletion']);
+    Route::get('/chapters/{chapterId}/quiz/status', [QuizController::class, 'getQuizStatus']);
+    Route::get('/chapters/{chapterId}/quiz', [QuizController::class, 'getQuiz']);
+    Route::post('/chapters/{chapterId}/quiz/start', [QuizController::class, 'startQuiz']);
+
     Route::get('/chapters/{id}', [ChapterController::class, 'show']);
 
     // Progress & Chapter Time Tracking & Parent Report Routes
@@ -64,6 +73,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/explain', [AiTutorController::class, 'explainTopic']);
         Route::post('/questions', [AiTutorController::class, 'generateQuestions']);
     });
+
+    // Chapter Quiz System Routes (Student)
+    Route::get('/chapters/{chapterId}/completion', [QuizController::class, 'getChapterCompletion']);
+    Route::get('/chapters/{chapterId}/quiz/status', [QuizController::class, 'getQuizStatus']);
+    Route::get('/chapters/{chapterId}/quiz', [QuizController::class, 'getQuiz']);
+    Route::post('/chapters/{chapterId}/quiz/start', [QuizController::class, 'startQuiz']);
+    Route::post('/quiz-attempts/{attemptId}/mcq-answer', [QuizController::class, 'saveMcqAnswer']);
+    Route::post('/quiz-attempts/{attemptId}/written-answer', [QuizController::class, 'saveWrittenAnswer']);
+    Route::post('/quiz-attempts/{attemptId}/submit', [QuizController::class, 'submitQuiz']);
+    Route::get('/quiz-attempts/{attemptId}/evaluation-status', [QuizController::class, 'getEvaluationStatus']);
+    Route::get('/quiz-attempts/{attemptId}/result', [QuizController::class, 'getResult']);
+    Route::get('/quiz-attempts/history', [QuizController::class, 'getAttemptHistory']);
+    Route::post('/quiz/{quizAttemptId}/evaluate-written', [QuizController::class, 'evaluateSingleWritten']);
+    Route::post('/quiz/{quizAttemptId}/evaluate-written-batch', [QuizController::class, 'evaluateBatchWritten']);
 
     // Admin routes
     Route::prefix('admin')->middleware(['admin', 'throttle:api'])->group(function () {
@@ -109,6 +132,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/questions/{id}', [QuestionController::class, 'show']);
         Route::put('/questions/{id}', [QuestionController::class, 'update']);
         Route::delete('/questions/{id}', [QuestionController::class, 'destroy']);
+
+        // Admin Quiz Management Routes
+        Route::post('/quizzes/import-json', [AdminQuizController::class, 'importJson']);
+        Route::get('/quizzes/dashboard', [AdminQuizController::class, 'dashboard']);
+        Route::post('/chapters/{chapterId}/quiz-config', [AdminQuizController::class, 'saveQuizConfig']);
+        Route::post('/quizzes/{quizId}/mcq', [AdminQuizController::class, 'addMcq']);
+        Route::put('/quizzes/mcq/{questionId}', [AdminQuizController::class, 'updateMcq']);
+        Route::delete('/quizzes/mcq/{questionId}', [AdminQuizController::class, 'deleteMcq']);
+        Route::post('/quizzes/{quizId}/written', [AdminQuizController::class, 'addWritten']);
+        Route::put('/quizzes/written/{questionId}', [AdminQuizController::class, 'updateWritten']);
+        Route::delete('/quizzes/written/{questionId}', [AdminQuizController::class, 'deleteWritten']);
+        Route::post('/quizzes/{quizId}/toggle-publish', [AdminQuizController::class, 'togglePublish']);
+        Route::get('/quizzes/{quizId}/attempts', [AdminQuizController::class, 'viewStudentAttempts']);
+        Route::get('/quizzes/{quizId}/export', [AdminQuizController::class, 'exportResults']);
     });
 });
 

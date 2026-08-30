@@ -32,7 +32,7 @@ class ChapterController extends Controller
             'subject_id' => ['nullable', 'exists:subjects,id'],
         ]);
 
-        $query = Chapter::with(['subject', 'topics']);
+        $query = Chapter::with(['subject']);
 
         if ($request->filled('subject_id')) {
             $query->where('subject_id', $request->subject_id);
@@ -52,7 +52,7 @@ class ChapterController extends Controller
                         'id' => $chapter->subject->id ?? null,
                         'name' => $chapter->subject->name ?? '',
                     ],
-                    'topics_count' => $chapter->topics->count(),
+                    'topics_count' => 0,
                     'created_at' => $chapter->created_at,
                 ];
             }),
@@ -80,7 +80,7 @@ class ChapterController extends Controller
             ], 401);
         }
 
-        $chapter = Chapter::with(['subject.classLevel', 'topics'])->findOrFail($id);
+        $chapter = Chapter::with(['subject.classLevel'])->findOrFail($id);
 
         // Build the full source file URL
         $sourceFileUrl = null;
@@ -153,7 +153,7 @@ class ChapterController extends Controller
                     'id' => $chapter->subject->classLevel->id,
                     'name' => $chapter->subject->classLevel->name,
                 ],
-                'topics_count' => $chapter->topics->count(),
+                'topics_count' => 0,
                 'created_at' => $chapter->created_at,
                 'updated_at' => $chapter->updated_at,
             ],

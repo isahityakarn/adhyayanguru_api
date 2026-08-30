@@ -15,9 +15,8 @@ class AiQuestionService
      * Models to try in order of priority.
      */
     protected array $models = [
-        'gemini-3.5-flash',
-        'gemini-3.5-flash-lite',
         'gemini-3.6-flash',
+        'gemini-2.5-flash',
         'gemini-flash-latest',
     ];
 
@@ -379,5 +378,211 @@ PROMPT;
 
             return [];
         }
+    }
+
+    /**
+     * Generate 50 MCQs and 20 Written questions directly from Chapter PDF content using Gemini AI.
+     */
+    public function generateQuizFromPdfContent(
+        string $content,
+        string $chapterTitle,
+        string $subjectName = '',
+        string $classLevel = '',
+        int $targetMcqCount = 50,
+        int $targetWrittenCount = 20
+    ): array {
+        $apiKey = config('services.gemini.api_key');
+
+        $mcqs = [];
+        $written = [];
+
+        if (!empty($apiKey) && !empty($content)) {
+            $contentSnippet = mb_substr($content, 0, 8000, 'UTF-8');
+
+            if ($targetMcqCount > 0) {
+                $mcqs = $this->generateAiMcqsBatch($apiKey, $contentSnippet, $chapterTitle, $subjectName, $classLevel, $targetMcqCount);
+            }
+
+            if ($targetWrittenCount > 0) {
+                $written = $this->generateAiWrittenBatch($apiKey, $contentSnippet, $chapterTitle, $subjectName, $classLevel, $targetWrittenCount);
+            }
+        }
+
+        return [
+            'mcqs' => $mcqs,
+            'written' => $written,
+        ];
+    }
+
+    protected function generateAiMcqsBatch(
+        string $apiKey,
+        string $content,
+        string $chapterTitle,
+        string $subjectName,
+        string $classLevel,
+        int $targetCount
+    ): array {
+        $allMcqs = [];
+        $batchSize = 10; // 10 questions per prompt for fast AI execution
+        $batches = (int) ceil($targetCount / $batchSize);
+
+        for ($b = 1; $b <= $batches; $b++) {
+            $countNeeded = min($batchSize, $targetCount - count($allMcqs));
+            if ($countNeeded <= 0) break;
+
+            $prompt = <<<PROMPT
+You are an expert bilingual curriculum and assessment designer for {$classLevel} {$subjectName}.
+Based STRICTLY on the following textbook chapter PDF content for "{$chapterTitle}", generate {$countNeeded} high-quality BILINGUAL (English & Hindi) Multiple Choice Questions (MCQ) (Batch {$b} of {$batches}).
+
+CRITICAL MANDATORY REQUIREMENT:
+All question_text, options text, and explanation MUST BE BILINGUAL (Provided in both English and Hindi, separated by ' / ').
+Example question_text: "What is the primary concept of this topic? / इस विषय की प्राथमिक अवधारणा क्या है?"
+Example option text: "First fundamental principle / पहला मौलिक सिद्धांत"
+Example explanation: "Option C is correct because... / विकल्प C सही है क्योंकि..."
+
+RETURN STRICTLY A VALID JSON ARRAY. No explanations before or after the JSON.
+Structure:
+[
+  {
+    "question_text": "Question in English? / हिन्दी में प्रश्न?",
+    "options": [
+      {"letter": "A", "text": "Option 1 in English / हिन्दी में विकल्प 1"},
+      {"letter": "B", "text": "Option 2 in English / हिन्दी में विकल्प 2"},
+      {"letter": "C", "text": "Option 3 in English / हिन्दी में विकल्प 3"},
+      {"letter": "D", "text": "Option 4 in English / हिन्दी में विकल्प 4"}
+    ],
+    "correct_answer": "A",
+    "explanation": "Explanation in English. / हिन्दी में स्पष्टीकरण।",
+    "difficulty": "medium"
+  }
+]
+
+Textbook PDF Content:
+{$content}
+PROMPT;
+
+            $result = $this->callGeminiApi($apiKey, $prompt);
+            if (!empty($result) && is_array($result)) {
+                foreach ($result as $q) {
+                    if (!empty($q['question_text']) && !empty($q['options']) && is_array($q['options'])) {
+                        $allMcqs[] = [
+                            'question_text' => trim($q['question_text']),
+                            'options' => array_map(function ($opt) {
+                                return [
+                                    'letter' => strtoupper($opt['letter'] ?? 'A'),
+                                    'text' => (string) ($opt['text'] ?? ''),
+                                ];
+                            }, $q['options']),
+                            'correct_answer' => strtoupper(trim($q['correct_answer'] ?? 'A')),
+                            'explanation' => $q['explanation'] ?? "Based on chapter '{$chapterTitle}'. / अध्याय '{$chapterTitle}' पर आधारित।",
+                            'difficulty' => in_array($q['difficulty'] ?? '', ['easy', 'medium', 'hard']) ? $q['difficulty'] : 'medium',
+                        ];
+                    }
+                }
+            }
+        }
+
+        return $allMcqs;
+    }
+
+    protected function generateAiWrittenBatch(
+        string $apiKey,
+        string $content,
+        string $chapterTitle,
+        string $subjectName,
+        string $classLevel,
+        int $targetCount
+    ): array {
+        $allWritten = [];
+        $batchSize = 10;
+        $batches = (int) ceil($targetCount / $batchSize);
+
+        for ($b = 1; $b <= $batches; $b++) {
+            $countNeeded = min($batchSize, $targetCount - count($allWritten));
+            if ($countNeeded <= 0) break;
+
+            $prompt = <<<PROMPT
+You are an expert bilingual curriculum assessment designer for {$classLevel} {$subjectName}.
+Based STRICTLY on the textbook chapter PDF content for "{$chapterTitle}", generate {$countNeeded} comprehensive BILINGUAL (English & Hindi) Subjective / Written short and long answer questions (Batch {$b} of {$batches}).
+
+CRITICAL MANDATORY REQUIREMENT:
+All question_text, expected_answer, and marking_criteria MUST BE BILINGUAL (Provided in both English and Hindi, separated by ' / ').
+Example question_text: "Explain the main principles of {$chapterTitle}. / {$chapterTitle} के मुख्य सिद्धांतों की व्याख्या करें।"
+
+RETURN STRICTLY A VALID JSON ARRAY. No explanations before or after the JSON.
+Structure:
+[
+  {
+    "question_text": "Subjective question in English? / हिन्दी में वर्णनात्मक प्रश्न?",
+    "expected_answer": "Model answer in English. / हिन्दी में आदर्श उत्तर।",
+    "key_concepts": ["concept 1", "concept 2"],
+    "marking_criteria": "Award full marks for clear explanation. / स्पष्ट व्याख्या के लिए पूरे अंक दें।",
+    "min_words": 20,
+    "max_words": 300,
+    "marks": 10
+  }
+]
+
+Textbook PDF Content:
+{$content}
+PROMPT;
+
+            $result = $this->callGeminiApi($apiKey, $prompt);
+            if (!empty($result) && is_array($result)) {
+                foreach ($result as $wq) {
+                    if (!empty($wq['question_text'])) {
+                        $allWritten[] = [
+                            'question_text' => trim($wq['question_text']),
+                            'expected_answer' => $wq['expected_answer'] ?? 'Detailed explanation based on lesson.',
+                            'key_concepts' => is_array($wq['key_concepts'] ?? null) ? $wq['key_concepts'] : [$chapterTitle],
+                            'marking_criteria' => $wq['marking_criteria'] ?? 'Award marks based on accuracy and clarity.',
+                            'min_words' => (int) ($wq['min_words'] ?? 20),
+                            'max_words' => (int) ($wq['max_words'] ?? 300),
+                            'marks' => (int) ($wq['marks'] ?? 10),
+                        ];
+                    }
+                }
+            }
+        }
+
+        return $allWritten;
+    }
+
+    protected function callGeminiApi(string $apiKey, string $prompt): ?array
+    {
+        foreach ($this->models as $model) {
+            try {
+                $response = Http::timeout(90)
+                    ->post("https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}", [
+                        'contents' => [
+                            [
+                                'parts' => [
+                                    ['text' => $prompt],
+                                ],
+                            ],
+                        ],
+                        'generationConfig' => [
+                            'temperature' => 0.5,
+                            'topK' => 40,
+                            'topP' => 0.95,
+                            'maxOutputTokens' => 4096,
+                        ],
+                    ]);
+
+                if ($response->successful()) {
+                    $responseData = $response->json();
+                    $text = $responseData['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                    $parsed = $this->cleanAndParseJson($text);
+
+                    if (!empty($parsed) && is_array($parsed)) {
+                        return $parsed;
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::warning("Gemini model {$model} error: " . $e->getMessage());
+            }
+        }
+
+        return null;
     }
 }

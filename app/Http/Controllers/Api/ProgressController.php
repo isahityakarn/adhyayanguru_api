@@ -6,6 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Models\Chapter;
 use App\Models\Progress;
 use App\Models\User;
+use App\Models\Quiz;
+use App\Models\QuizQuestion;
+use App\Models\QuizWrittenQuestion;
+use Database\Seeders\QuizSeeder;
 use Illuminate\Http\Request;
 
 class ProgressController extends Controller
@@ -114,14 +118,18 @@ class ProgressController extends Controller
 
             if ($request->has('status')) {
                 $progress->status = $request->status;
+                if ($request->status !== 'completed') {
+                    $progress->completed_at = null;
+                }
             }
 
-            if ($progress->status === 'completed' || $progress->percent_complete >= 100) {
+            if ($progress->status === 'completed' || ($request->has('percent_complete') && $progress->percent_complete >= 100)) {
                 $progress->status = 'completed';
                 $progress->percent_complete = 100;
                 if (!$progress->completed_at) {
                     $progress->completed_at = now();
                 }
+                self::ensureQuizForChapter($chapterId);
             }
 
             $progress->last_accessed_at = now();
@@ -240,5 +248,149 @@ class ProgressController extends Controller
             ],
             'chapters' => $chaptersSummary,
         ]);
+    }
+
+    /**
+     * Ensure a Quiz with 50 MCQs and 20 Written questions exists for the completed chapter.
+     */
+    public static function ensureQuizForChapter($chapterId, bool $forceRegenerate = false)
+    {
+        try {
+            $chapter = Chapter::with(['subject.classLevel', 'pages'])->find($chapterId);
+            if (!$chapter) return;
+
+            $quiz = Quiz::firstOrCreate(
+                ['chapter_id' => $chapterId],
+                [
+                    'title' => "Chapter " . ($chapter->chapter_number ?? 1) . " Comprehensive Quiz",
+                    'description' => "Test your knowledge on {$chapter->title} with 50 MCQs and 20 written questions.",
+                    'total_mcq' => 50,
+                    'total_written' => 20,
+                    'time_limit_minutes' => 45,
+                    'passing_percentage' => 60.0,
+                    'marks_per_mcq' => 1,
+                    'marks_per_written' => 10,
+                    'randomize_questions' => false,
+                    'randomize_options' => false,
+                    'max_attempts' => 5,
+                    'is_published' => true,
+                ]
+            );
+
+            // Ensure is_published is true
+            if (!$quiz->is_published) {
+                $quiz->is_published = true;
+                $quiz->save();
+            }
+
+            // Detect if existing quiz contains old generic placeholder/template questions
+            $hasOldTemplates = QuizWrittenQuestion::where('quiz_id', $quiz->id)
+                ->where(function ($q) {
+                    $q->where('question_text', 'LIKE', 'Written Question%')
+                      ->orWhere('question_text', 'LIKE', 'Q%:')
+                      ->orWhere('question_text', 'LIKE', '%Explain the fundamental principles%');
+                })
+                ->exists();
+
+            if ($forceRegenerate || $hasOldTemplates) {
+                QuizQuestion::where('quiz_id', $quiz->id)->delete();
+                QuizWrittenQuestion::where('quiz_id', $quiz->id)->delete();
+            }
+
+            $existingMcqCount = QuizQuestion::where('quiz_id', $quiz->id)->count();
+            $existingWrittenCount = QuizWrittenQuestion::where('quiz_id', $quiz->id)->count();
+
+            if ($existingMcqCount < 50 || $existingWrittenCount < 20) {
+                // 1. Extract PDF content from chapter
+                $pdfText = $chapter->extracted_text;
+
+                if (empty($pdfText) && $chapter->pages->count() > 0) {
+                    $pdfText = $chapter->pages->pluck('content')->implode("\n\n");
+                }
+
+                if (empty($pdfText) && !empty($chapter->source_file_url)) {
+                    try {
+                        $pdfExtractor = app(\App\Services\PdfExtractorService::class);
+                        $pdfText = $pdfExtractor->extractText($chapter->source_file_url);
+                        if ($pdfText) {
+                            $chapter->extracted_text = $pdfText;
+                            $chapter->save();
+                        }
+                    } catch (\Throwable $ex) {
+                        \Illuminate\Support\Facades\Log::warning("PDF Extraction warning for chapter {$chapterId}: " . $ex->getMessage());
+                    }
+                }
+
+                // 2. Generate questions from PDF using Gemini AI
+                $subjectName = $chapter->subject->name ?? '';
+                $className = $chapter->subject->classLevel->name ?? '';
+
+                if (!empty($pdfText)) {
+                    $aiService = app(\App\Services\AiQuestionService::class);
+                    $generated = $aiService->generateQuizFromPdfContent(
+                        $pdfText,
+                        $chapter->title,
+                        $subjectName,
+                        $className,
+                        max(0, 50 - $existingMcqCount),
+                        max(0, 20 - $existingWrittenCount)
+                    );
+
+                    // Insert AI-generated MCQs
+                    if (!empty($generated['mcqs'])) {
+                        foreach ($generated['mcqs'] as $index => $mcq) {
+                            QuizQuestion::create([
+                                'quiz_id' => $quiz->id,
+                                'question_text' => $mcq['question_text'],
+                                'options' => $mcq['options'],
+                                'correct_answer' => $mcq['correct_answer'],
+                                'explanation' => $mcq['explanation'],
+                                'difficulty' => $mcq['difficulty'],
+                                'order_num' => $existingMcqCount + $index + 1,
+                            ]);
+                        }
+                        $existingMcqCount = QuizQuestion::where('quiz_id', $quiz->id)->count();
+                    }
+
+                    // Insert AI-generated Written Questions
+                    if (!empty($generated['written'])) {
+                        foreach ($generated['written'] as $index => $w) {
+                            QuizWrittenQuestion::create([
+                                'quiz_id' => $quiz->id,
+                                'question_text' => $w['question_text'],
+                                'expected_answer' => $w['expected_answer'],
+                                'key_concepts' => $w['key_concepts'],
+                                'marking_criteria' => $w['marking_criteria'],
+                                'min_words' => $w['min_words'],
+                                'max_words' => $w['max_words'],
+                                'marks' => $w['marks'],
+                                'order_num' => $existingWrittenCount + $index + 1,
+                            ]);
+                        }
+                        $existingWrittenCount = QuizWrittenQuestion::where('quiz_id', $quiz->id)->count();
+                    }
+                }
+
+                // 3. Fallback seeder if needed to reach target 50 MCQs & 20 Written
+                if ($existingMcqCount < 50 || $existingWrittenCount < 20) {
+                    $seeder = new QuizSeeder();
+                    $reflector = new \ReflectionClass($seeder);
+
+                    if ($existingMcqCount < 50) {
+                        $generateMcq = $reflector->getMethod('generateMcqQuestions');
+                        $generateMcq->setAccessible(true);
+                        $generateMcq->invoke($seeder, $quiz, $chapter, 50 - $existingMcqCount, $existingMcqCount);
+                    }
+
+                    if ($existingWrittenCount < 20) {
+                        $generateWritten = $reflector->getMethod('generateWrittenQuestions');
+                        $generateWritten->setAccessible(true);
+                        $generateWritten->invoke($seeder, $quiz, $chapter, 20 - $existingWrittenCount, $existingWrittenCount);
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error("Failed to auto-generate quiz for chapter {$chapterId}: " . $e->getMessage());
+        }
     }
 }

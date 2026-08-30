@@ -12,14 +12,16 @@ class QuizAnswer extends Model
     protected $fillable = [
         'attempt_id',
         'question_id',
-        'selected_answer',
+        'selected_option',
         'is_correct',
+        'is_marked_for_review',
     ];
 
     protected function casts(): array
     {
         return [
             'is_correct' => 'boolean',
+            'is_marked_for_review' => 'boolean',
         ];
     }
 
@@ -30,6 +32,6 @@ class QuizAnswer extends Model
 
     public function question()
     {
-        return $this->belongsTo(Question::class);
+        return $this->belongsTo(QuizQuestion::class, 'question_id');
     }
 }
