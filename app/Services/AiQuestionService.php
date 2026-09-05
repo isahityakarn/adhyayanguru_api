@@ -4,7 +4,9 @@ namespace App\Services;
 
 use App\Models\Chapter;
 use App\Models\ChapterPage;
-use App\Models\Question;
+use App\Models\Quiz;
+use App\Models\QuizQuestion;
+use App\Models\QuizWrittenQuestion;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -30,49 +32,45 @@ class AiQuestionService
         array $options = []
     ): array {
         $apiKey = config('services.gemini.api_key');
-        $count = $options['count'] ?? 6;
-        $difficulty = $options['difficulty'] ?? 'mixed';
+        $mcqCount = $options['mcq_count'] ?? 50;
+        $subjectiveCount = $options['subjective_count'] ?? 20;
 
         if (! empty($apiKey)) {
-            // Trim content to reasonable length for token limits (approx 5000 chars)
-            $contentSnippet = mb_substr($content, 0, 5000, 'UTF-8');
+            // Trim content to reasonable length for token limits (approx 8000 chars)
+            $contentSnippet = mb_substr($content, 0, 8000, 'UTF-8');
 
             $prompt = <<<PROMPT
 You are an expert curriculum and educational assessment designer.
-Based on the following chapter content, generate {$count} high-quality questions for students.
+Based on the following chapter content, generate exactly {$mcqCount} Multiple Choice Questions (MCQ) and {$subjectiveCount} Conceptual Short Answer questions.
 
 Chapter Title: {$chapterTitle}
 Subject: {$subjectName}
-Difficulty preference: {$difficulty}
 
-Include both Multiple Choice Questions (MCQ) and Conceptual Short Answer questions.
 For MCQs, provide 4 plausible options (letters A, B, C, D) with exactly one correct answer.
 
-RETURN STRICTLY A VALID JSON ARRAY. No explanations before or after the JSON.
-Each object in the array MUST have the following structure:
-[
-  {
-    "question_text": "Clear question text here?",
-    "question_type": "mcq",
-    "options": [
-      {"letter": "A", "text": "Option 1"},
-      {"letter": "B", "text": "Option 2"},
-      {"letter": "C", "text": "Option 3"},
-      {"letter": "D", "text": "Option 4"}
-    ],
-    "correct_answer": "B",
-    "explanation": "Brief explanation of why this answer is correct based on the text.",
-    "difficulty": "medium"
-  },
-  {
-    "question_text": "Short answer question text?",
-    "question_type": "short_answer",
-    "options": null,
-    "correct_answer": "Model short answer explaining the concept clearly.",
-    "explanation": "Key points students should include in their answer.",
-    "difficulty": "easy"
-  }
-]
+RETURN STRICTLY A VALID JSON OBJECT. No explanations before or after the JSON.
+The JSON object MUST have the following structure exactly:
+{
+  "mcq": [
+    {
+      "id": 1,
+      "question": "Clear question text here?",
+      "options": {
+        "A": "Option 1",
+        "B": "Option 2",
+        "C": "Option 3",
+        "D": "Option 4"
+      },
+      "answer": "B"
+    }
+  ],
+  "subjective_questions": [
+    {
+      "id": 1,
+      "question": "Short answer question text?"
+    }
+  ]
+}
 
 Chapter Content:
 {$contentSnippet}
@@ -93,7 +91,7 @@ PROMPT;
                                 'temperature' => 0.6,
                                 'topK' => 40,
                                 'topP' => 0.95,
-                                'maxOutputTokens' => 2048,
+                                'maxOutputTokens' => 8192,
                             ],
                         ]);
 
@@ -125,7 +123,7 @@ PROMPT;
         // Fallback generator if AI API fails or quota exceeded
         Log::info('Using fallback heuristic question generator for chapter', ['title' => $chapterTitle]);
 
-        return $this->generateFallbackQuestions($content, $chapterTitle, $subjectName, $count);
+        return $this->generateFallbackQuestions($content, $chapterTitle, $subjectName, $mcqCount + $subjectiveCount);
     }
 
     /**
@@ -138,9 +136,15 @@ PROMPT;
         $clean = preg_replace('/\s*```$/m', '', $clean);
         $clean = trim($clean);
 
-        // Find JSON array start and end
-        $startPos = strpos($clean, '[');
-        $endPos = strrpos($clean, ']');
+        // Find JSON object or array start and end
+        $startPos = strpos($clean, '{');
+        $arrayStartPos = strpos($clean, '[');
+        if ($arrayStartPos !== false && ($startPos === false || $arrayStartPos < $startPos)) {
+            $startPos = $arrayStartPos;
+            $endPos = strrpos($clean, ']');
+        } else {
+            $endPos = strrpos($clean, '}');
+        }
 
         if ($startPos !== false && $endPos !== false && $endPos > $startPos) {
             $clean = substr($clean, $startPos, $endPos - $startPos + 1);
@@ -170,6 +174,55 @@ PROMPT;
     {
         $formatted = [];
 
+        // Handle the new associative format with "mcq" and "subjective_questions"
+        if (isset($rawQuestions['mcq']) || isset($rawQuestions['subjective_questions'])) {
+            $mcqs = $rawQuestions['mcq'] ?? [];
+            foreach ($mcqs as $q) {
+                if (empty($q['question'])) {
+                    continue;
+                }
+
+                $options = null;
+                if (!empty($q['options']) && is_array($q['options'])) {
+                    $options = [];
+                    foreach ($q['options'] as $letter => $text) {
+                        $options[] = [
+                            'letter' => $letter,
+                            'text' => (string) $text,
+                        ];
+                    }
+                }
+
+                $formatted[] = [
+                    'question_text' => trim($q['question']),
+                    'question_type' => 'mcq',
+                    'options' => $options,
+                    'correct_answer' => (string) ($q['answer'] ?? 'A'),
+                    'explanation' => null,
+                    'difficulty' => 'medium',
+                ];
+            }
+
+            $subjectives = $rawQuestions['subjective_questions'] ?? [];
+            foreach ($subjectives as $q) {
+                if (empty($q['question'])) {
+                    continue;
+                }
+
+                $formatted[] = [
+                    'question_text' => trim($q['question']),
+                    'question_type' => 'short_answer',
+                    'options' => null,
+                    'correct_answer' => '',
+                    'explanation' => null,
+                    'difficulty' => 'medium',
+                ];
+            }
+
+            return $formatted;
+        }
+
+        // Fallback for old flat array format
         foreach ($rawQuestions as $q) {
             if (empty($q['question_text'])) {
                 continue;
@@ -302,39 +355,78 @@ PROMPT;
         return DB::transaction(function () use ($chapterId, $questions, $replaceExisting) {
             $chapter = Chapter::findOrFail($chapterId);
 
+            $quiz = Quiz::updateOrCreate(
+                ['chapter_id' => $chapterId],
+                [
+                    'title' => "Chapter Quiz: {$chapter->title}",
+                    'description' => "Auto-generated quiz for {$chapter->title}",
+                    'time_limit_minutes' => 45,
+                    'passing_percentage' => 60.0,
+                    'marks_per_mcq' => 1,
+                    'marks_per_written' => 10,
+                    'is_published' => true,
+                ]
+            );
+
             if ($replaceExisting) {
-                Question::where('chapter_id', $chapterId)->delete();
+                QuizQuestion::where('quiz_id', $quiz->id)->delete();
+                QuizWrittenQuestion::where('quiz_id', $quiz->id)->delete();
             }
 
-            $createdQuestions = [];
+            $createdMcqs = [];
+            $createdWritten = [];
+            
+            $maxMcqOrder = QuizQuestion::where('quiz_id', $quiz->id)->max('order_num') ?? 0;
+            $maxWrittenOrder = QuizWrittenQuestion::where('quiz_id', $quiz->id)->max('order_num') ?? 0;
 
             foreach ($questions as $q) {
                 $type = in_array($q['question_type'] ?? '', ['mcq', 'short_answer']) ? $q['question_type'] : 'mcq';
                 $difficulty = in_array($q['difficulty'] ?? '', ['easy', 'medium', 'hard']) ? $q['difficulty'] : 'medium';
 
-                $created = Question::create([
-                    'chapter_id' => $chapterId,
-                    'topic_id' => $q['topic_id'] ?? null,
-                    'question_text' => $q['question_text'],
-                    'question_type' => $type,
-                    'options' => $q['options'] ?? null,
-                    'correct_answer' => (string) ($q['correct_answer'] ?? ''),
-                    'difficulty' => $difficulty,
-                ]);
-
-                $createdQuestions[] = $created;
+                if ($type === 'mcq') {
+                    $maxMcqOrder++;
+                    $created = QuizQuestion::create([
+                        'quiz_id' => $quiz->id,
+                        'question_text' => $q['question_text'],
+                        'options' => $q['options'] ?? [],
+                        'correct_answer' => strtoupper(trim($q['correct_answer'] ?? 'A')),
+                        'explanation' => $q['explanation'] ?? null,
+                        'difficulty' => $difficulty,
+                        'order_num' => $maxMcqOrder,
+                    ]);
+                    $createdMcqs[] = $created;
+                } else {
+                    $maxWrittenOrder++;
+                    $created = QuizWrittenQuestion::create([
+                        'quiz_id' => $quiz->id,
+                        'question_text' => $q['question_text'],
+                        'expected_answer' => $q['correct_answer'] ?? 'Detailed explanation based on lesson.',
+                        'key_concepts' => [$chapter->title],
+                        'marking_criteria' => 'Award full marks for clear explanation.',
+                        'min_words' => 20,
+                        'max_words' => 300,
+                        'marks' => 10,
+                        'order_num' => $maxWrittenOrder,
+                    ]);
+                    $createdWritten[] = $created;
+                }
             }
 
-            // Sync questions summary JSON in chapters table
-            $allChapterQuestions = Question::where('chapter_id', $chapterId)->get();
-            $chapter->questions = $allChapterQuestions->toJson();
+            $quiz->total_mcq = QuizQuestion::where('quiz_id', $quiz->id)->count();
+            $quiz->total_written = QuizWrittenQuestion::where('quiz_id', $quiz->id)->count();
+            $quiz->save();
+
+            // Sync legacy questions summary JSON in chapters table (if still needed by frontend)
+            $allChapterQuestions = array_merge($createdMcqs, $createdWritten);
+            $chapter->questions = collect($allChapterQuestions)->toJson();
             $chapter->processed_at = now();
             $chapter->save();
 
             return [
-                'count' => count($createdQuestions),
-                'questions' => $createdQuestions,
-                'total_in_db' => $allChapterQuestions->count(),
+                'count' => count($allChapterQuestions),
+                'questions' => $allChapterQuestions,
+                'total_in_db' => $quiz->total_mcq + $quiz->total_written,
+                'quiz_id' => $quiz->id,
             ];
         });
     }

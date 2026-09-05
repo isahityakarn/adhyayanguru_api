@@ -37,19 +37,9 @@ class Chapter extends Model
         return $this->belongsTo(User::class, 'created_by');
     }
 
-    public function topics()
-    {
-        return $this->hasMany(Topic::class);
-    }
-
     public function pages()
     {
         return $this->hasMany(ChapterPage::class);
-    }
-
-    public function questions()
-    {
-        return $this->hasMany(Question::class);
     }
 
     public function quizAttempts()

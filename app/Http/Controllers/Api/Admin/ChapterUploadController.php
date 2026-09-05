@@ -6,7 +6,8 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Chapter;
 use App\Models\ClassLevel;
-use App\Models\Question;
+use App\Models\QuizQuestion;
+use App\Models\QuizWrittenQuestion;
 use App\Models\Subject;
 use App\Services\AiQuestionService;
 use App\Services\PdfExtractorService;
@@ -42,14 +43,14 @@ class ChapterUploadController extends Controller
         $totalChapters = Chapter::count();
         $chaptersWithPdf = Chapter::whereNotNull('source_file_url')->where('source_file_url', '!=', '')->count();
         $chaptersProcessed = Chapter::whereNotNull('extracted_text')->where('extracted_text', '!=', '')->count();
-        $totalQuestions = Question::count();
-        $mcqQuestions = Question::where('question_type', 'mcq')->count();
-        $shortAnswerQuestions = Question::where('question_type', 'short_answer')->count();
+        $mcqQuestions = QuizQuestion::count();
+        $shortAnswerQuestions = QuizWrittenQuestion::count();
+        $totalQuestions = $mcqQuestions + $shortAnswerQuestions;
 
         $difficultyCounts = [
-            'easy' => Question::where('difficulty', 'easy')->count(),
-            'medium' => Question::where('difficulty', 'medium')->count(),
-            'hard' => Question::where('difficulty', 'hard')->count(),
+            'easy' => QuizQuestion::where('difficulty', 'easy')->count(),
+            'medium' => QuizQuestion::where('difficulty', 'medium')->count(),
+            'hard' => QuizQuestion::where('difficulty', 'hard')->count(),
         ];
 
         return response()->json([
@@ -146,8 +147,6 @@ class ChapterUploadController extends Controller
             'chapter_number' => ['required', 'integer', 'min:1'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
-            'question_count' => ['nullable', 'integer', 'min:2', 'max:15'],
-            'difficulty' => ['nullable', 'in:easy,medium,hard,mixed'],
         ]);
 
         try {
@@ -183,8 +182,20 @@ class ChapterUploadController extends Controller
                 $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $originalName);
                 $filename = 'chapter_' . time() . '_' . $safeName . '.' . ($pdfFile->getClientOriginalExtension() ?: 'pdf');
 
-                // Move file to storage path and duplicate to all target paths
-                $pdfFile->move($targetDir1, $filename);
+                $tempPdfPath = "{$targetDir1}/temp_{$filename}";
+                $pdfFile->move($targetDir1, "temp_{$filename}");
+                
+                // Compress PDF using Ghostscript
+                $gsCommand = "gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/screen -dNOPAUSE -dQUIET -dBATCH -sOutputFile=" . escapeshellarg("{$targetDir1}/{$filename}") . " " . escapeshellarg($tempPdfPath);
+                exec($gsCommand);
+                
+                if (file_exists("{$targetDir1}/{$filename}") && filesize("{$targetDir1}/{$filename}") > 0) {
+                    @unlink($tempPdfPath);
+                } else {
+                    rename($tempPdfPath, "{$targetDir1}/{$filename}");
+                }
+
+                // Duplicate to all target paths
                 File::copy("{$targetDir1}/{$filename}", "{$targetDir2}/{$filename}");
                 File::copy("{$targetDir1}/{$filename}", "{$targetDir3}/{$filename}");
                 File::copy("{$targetDir1}/{$filename}", "{$targetDir4}/{$filename}");
@@ -203,11 +214,23 @@ class ChapterUploadController extends Controller
                         'message' => 'Could not decode PDF data. Please try again.',
                     ], 422);
                 }
+                
+                $tempPdfPath = "{$targetDir1}/temp_{$filename}";
+                File::put($tempPdfPath, $binaryData);
+                
+                // Compress PDF using Ghostscript
+                $gsCommand = "gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/screen -dNOPAUSE -dQUIET -dBATCH -sOutputFile=" . escapeshellarg("{$targetDir1}/{$filename}") . " " . escapeshellarg($tempPdfPath);
+                exec($gsCommand);
+                
+                if (file_exists("{$targetDir1}/{$filename}") && filesize("{$targetDir1}/{$filename}") > 0) {
+                    @unlink($tempPdfPath);
+                } else {
+                    rename($tempPdfPath, "{$targetDir1}/{$filename}");
+                }
 
-                File::put("{$targetDir1}/{$filename}", $binaryData);
-                File::put("{$targetDir2}/{$filename}", $binaryData);
-                File::put("{$targetDir3}/{$filename}", $binaryData);
-                File::put("{$targetDir4}/{$filename}", $binaryData);
+                File::put("{$targetDir2}/{$filename}", file_get_contents("{$targetDir1}/{$filename}"));
+                File::put("{$targetDir3}/{$filename}", file_get_contents("{$targetDir1}/{$filename}"));
+                File::put("{$targetDir4}/{$filename}", file_get_contents("{$targetDir1}/{$filename}"));
             }
 
             // Create or update chapter record
@@ -242,17 +265,14 @@ class ChapterUploadController extends Controller
                 $aiQuestionService = app(AiQuestionService::class);
                 $pagesSaved = $aiQuestionService->extractAndSavePages($chapter->id, "{$relativeDir}/{$filename}");
 
-                // 3. Generate Questions using AI and save directly into `questions` DB table
-                $questionCount = $request->input('question_count', 6);
-                $difficulty = $request->input('difficulty', 'mixed');
-
+                // 3. Generate 50 MCQs and 20 Subjective Questions using AI and save directly into `questions` DB table
                 $generatedQuestions = $aiQuestionService->generateQuestionsForChapter(
                     $extractedText,
                     $chapter->title,
                     $subject->name,
                     [
-                        'count' => $questionCount,
-                        'difficulty' => $difficulty,
+                        'mcq_count' => 50,
+                        'subjective_count' => 20,
                     ]
                 );
 
@@ -263,7 +283,7 @@ class ChapterUploadController extends Controller
             }
 
             // Refresh chapter from database with relations
-            $chapter->load(['subject.classLevel', 'questions', 'pages']);
+            $chapter->load(['subject.classLevel', 'pages']);
 
             return response()->json([
                 'message' => 'Chapter PDF uploaded, content extracted, and questions saved into database successfully!',
@@ -277,7 +297,7 @@ class ChapterUploadController extends Controller
                     'has_extracted_text' => ! empty($chapter->extracted_text),
                     'text_length' => strlen($chapter->extracted_text ?? ''),
                     'text_preview' => mb_substr($chapter->extracted_text ?? '', 0, 400, 'UTF-8'),
-                    'questions_count' => $chapter->questions()->count(),
+                    'questions_count' => is_array($chapter->questions) ? count($chapter->questions) : 0,
                     'pages_count' => $chapter->pages()->count(),
                     'processed_at' => $chapter->processed_at,
                     'questions' => $chapter->questions,
@@ -331,17 +351,14 @@ class ChapterUploadController extends Controller
             $aiQuestionService = app(AiQuestionService::class);
             $aiQuestionService->extractAndSavePages($chapter->id, $path);
 
-            // 3. Generate Questions and save in `questions` table
-            $count = $request->input('question_count', 6);
-            $difficulty = $request->input('difficulty', 'mixed');
-
+            // 3. Generate 50 MCQs and 20 Subjective Questions and save in `questions` table
             $generatedQuestions = $aiQuestionService->generateQuestionsForChapter(
                 $extractedText,
                 $chapter->title,
                 $chapter->subject->name ?? '',
                 [
-                    'count' => $count,
-                    'difficulty' => $difficulty,
+                    'mcq_count' => 50,
+                    'subjective_count' => 20,
                 ]
             );
 
@@ -351,7 +368,7 @@ class ChapterUploadController extends Controller
             Cache::forget("chapter_text_{$chapter->id}");
 
             // Reload fresh questions
-            $questions = Question::where('chapter_id', $chapter->id)->get();
+            $questions = is_array($chapter->questions) ? collect($chapter->questions) : collect([]);
 
             return response()->json([
                 'message' => 'Chapter reprocessed successfully and saved in database!',
@@ -388,8 +405,6 @@ class ChapterUploadController extends Controller
     public function generateMoreQuestions(Request $request, $id)
     {
         $request->validate([
-            'count' => ['nullable', 'integer', 'min:1', 'max:10'],
-            'difficulty' => ['nullable', 'in:easy,medium,hard,mixed'],
             'replace_existing' => ['nullable', 'boolean'],
         ]);
 
@@ -413,8 +428,6 @@ class ChapterUploadController extends Controller
                 ], 422);
             }
 
-            $count = $request->input('count', 5);
-            $difficulty = $request->input('difficulty', 'mixed');
             $replaceExisting = $request->boolean('replace_existing', false);
 
             $aiQuestionService = app(AiQuestionService::class);
@@ -422,12 +435,15 @@ class ChapterUploadController extends Controller
                 $content,
                 $chapter->title,
                 $chapter->subject->name ?? '',
-                ['count' => $count, 'difficulty' => $difficulty]
+                [
+                    'mcq_count' => 50,
+                    'subjective_count' => 20,
+                ]
             );
 
             $saveResult = $aiQuestionService->saveQuestionsToDatabase($chapter->id, $generated, $replaceExisting);
 
-            $allQuestions = Question::where('chapter_id', $chapter->id)->get();
+            $allQuestions = is_array($chapter->questions) ? collect($chapter->questions) : collect([]);
 
             return response()->json([
                 'message' => 'New questions generated and saved into database!',
@@ -527,8 +543,8 @@ class ChapterUploadController extends Controller
      */
     public function getChapter(Request $request, $id)
     {
-        $chapter = Chapter::with(['subject.classLevel', 'pages', 'topics'])->findOrFail($id);
-        $questions = Question::where('chapter_id', $chapter->id)->get();
+        $chapter = Chapter::with(['subject.classLevel', 'pages'])->findOrFail($id);
+        $questions = is_array($chapter->questions) ? collect($chapter->questions) : collect([]);
 
         $baseUrl = rtrim($request->schemeAndHttpHost() ?: config('app.url', 'http://localhost:8000'), '/');
         $fileUrl = null;
@@ -559,7 +575,6 @@ class ChapterUploadController extends Controller
                 'questions_count' => $questions->count(),
                 'pages' => $chapter->pages,
                 'pages_count' => $chapter->pages ? $chapter->pages->count() : 0,
-                'topics' => $chapter->topics,
                 'processed_at' => $chapter->processed_at,
                 'created_at' => $chapter->created_at,
             ],
@@ -575,9 +590,13 @@ class ChapterUploadController extends Controller
             $chapter = Chapter::findOrFail($id);
 
             // Delete questions, pages, topics
-            Question::where('chapter_id', $chapter->id)->delete();
+            $quiz = \App\Models\Quiz::where('chapter_id', $chapter->id)->first();
+            if ($quiz) {
+                QuizQuestion::where('quiz_id', $quiz->id)->delete();
+                QuizWrittenQuestion::where('quiz_id', $quiz->id)->delete();
+                $quiz->delete();
+            }
             $chapter->pages()->delete();
-            $chapter->topics()->delete();
 
             $chapter->delete();
 
@@ -641,12 +660,15 @@ class ChapterUploadController extends Controller
                         $extractedText,
                         $ch->title,
                         $ch->subject->name ?? '',
-                        ['count' => 5, 'difficulty' => 'mixed']
+                        [
+                            'mcq_count' => 50,
+                            'subjective_count' => 20,
+                        ]
                     );
 
                     $aiQuestionService->saveQuestionsToDatabase($ch->id, $generated, true);
 
-                    $questionsInDb = Question::where('chapter_id', $ch->id)->count();
+                    $questionsInDb = is_array($ch->questions) ? count($ch->questions) : 0;
 
                     $results[] = [
                         'id' => $ch->id,
