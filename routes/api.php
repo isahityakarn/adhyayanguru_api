@@ -8,7 +8,6 @@ use App\Http\Controllers\Api\BoardController;
 use App\Http\Controllers\Api\ChapterController;
 use App\Http\Controllers\Api\ClassLevelController;
 use App\Http\Controllers\Api\PlanController;
-use App\Http\Controllers\Api\QuestionController;
 use App\Http\Controllers\Api\ProgressController;
 use App\Http\Controllers\Api\SubjectController;
 use App\Http\Controllers\Api\QuizController;
@@ -26,8 +25,6 @@ Route::get('/boards', [BoardController::class, 'index']);
 Route::get('/class-levels', [ClassLevelController::class, 'index']);
 Route::get('/subjects', [SubjectController::class, 'index']);
 Route::get('/chapters', [ChapterController::class, 'index']);
-Route::get('/chapters/{id}/questions', [QuestionController::class, 'indexByChapter']);
-Route::get('/questions', [QuestionController::class, 'index']);
 Route::get('/plans', [PlanController::class, 'index']);
 Route::post('/coqui-tts', [AiTutorController::class, 'coquiTts']);
 Route::post('/ai-tutor/coqui-tts', [AiTutorController::class, 'coquiTts']);
@@ -126,13 +123,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/subjects/{id}', [SubjectController::class, 'show']);
         Route::put('/subjects/{id}', [SubjectController::class, 'update']);
         Route::delete('/subjects/{id}', [SubjectController::class, 'destroy']);
-
-        // Questions CRUD
-        Route::get('/questions', [QuestionController::class, 'index']);
-        Route::post('/questions', [QuestionController::class, 'store']);
-        Route::get('/questions/{id}', [QuestionController::class, 'show']);
-        Route::put('/questions/{id}', [QuestionController::class, 'update']);
-        Route::delete('/questions/{id}', [QuestionController::class, 'destroy']);
 
         // Admin Quiz Management Routes
         Route::post('/quizzes/import-json', [AdminQuizController::class, 'importJson']);

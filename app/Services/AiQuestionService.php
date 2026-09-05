@@ -17,9 +17,9 @@ class AiQuestionService
      * Models to try in order of priority.
      */
     protected array $models = [
-        'gemini-3.6-flash',
-        'gemini-2.5-flash',
-        'gemini-flash-latest',
+        'gemini-1.5-flash',
+        'gemini-1.5-pro',
+        'gemini-1.0-pro',
     ];
 
     /**
@@ -78,7 +78,7 @@ PROMPT;
 
             foreach ($this->models as $model) {
                 try {
-                    $response = Http::timeout(25)
+                    $response = Http::timeout(180)
                         ->post("https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}", [
                             'contents' => [
                                 [
@@ -644,7 +644,7 @@ PROMPT;
     {
         foreach ($this->models as $model) {
             try {
-                $response = Http::timeout(90)
+                $response = Http::timeout(180)
                     ->post("https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}", [
                         'contents' => [
                             [

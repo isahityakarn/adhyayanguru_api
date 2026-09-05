@@ -67,10 +67,6 @@ class QuizController extends Controller
             $chapterCompleted = $progress ? ($progress->status === 'completed' || $progress->percent_complete >= 100) : false;
         }
 
-        if ($chapterCompleted) {
-            ProgressController::ensureQuizForChapter($chapterId);
-        }
-
         // 2. Quiz presence check
         $quiz = Quiz::where('chapter_id', $chapterId)->where('is_published', true)->first();
         $quizAvailable = (bool) $quiz;
@@ -121,9 +117,6 @@ class QuizController extends Controller
     public function getQuiz(Request $request, $chapterId)
     {
         $chapter = Chapter::with('subject.classLevel')->findOrFail($chapterId);
-
-        $force = $request->boolean('regenerate');
-        ProgressController::ensureQuizForChapter($chapterId, $force);
 
         $quiz = Quiz::where('chapter_id', $chapterId)->where('is_published', true)->first();
 

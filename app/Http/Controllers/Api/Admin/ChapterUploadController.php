@@ -543,8 +543,28 @@ class ChapterUploadController extends Controller
      */
     public function getChapter(Request $request, $id)
     {
-        $chapter = Chapter::with(['subject.classLevel', 'pages'])->findOrFail($id);
-        $questions = is_array($chapter->questions) ? collect($chapter->questions) : collect([]);
+        $chapter = Chapter::with(['subject.classLevel', 'pages', 'quiz.questions', 'quiz.writtenQuestions'])->findOrFail($id);
+        
+        $mcqQuestions = collect($chapter->quiz ? $chapter->quiz->questions : []);
+        $writtenQuestions = collect($chapter->quiz ? $chapter->quiz->writtenQuestions : []);
+        
+        $allQuestions = collect();
+        foreach ($mcqQuestions as $mcq) {
+            $allQuestions->push([
+                'question_type' => 'mcq',
+                'question_text' => $mcq->question_text,
+                'options' => is_string($mcq->options) ? json_decode($mcq->options, true) : $mcq->options,
+                'correct_answer' => $mcq->correct_answer,
+                'explanation' => $mcq->explanation,
+            ]);
+        }
+        foreach ($writtenQuestions as $written) {
+            $allQuestions->push([
+                'question_type' => 'short_answer',
+                'question_text' => $written->question_text,
+                'expected_answer' => $written->expected_answer,
+            ]);
+        }
 
         $baseUrl = rtrim($request->schemeAndHttpHost() ?: config('app.url', 'http://localhost:8000'), '/');
         $fileUrl = null;
@@ -571,8 +591,8 @@ class ChapterUploadController extends Controller
                     'id' => $chapter->subject->classLevel->id ?? null,
                     'name' => $chapter->subject->classLevel->name ?? '',
                 ],
-                'questions' => $questions,
-                'questions_count' => $questions->count(),
+                'questions' => $allQuestions,
+                'questions_count' => $allQuestions->count(),
                 'pages' => $chapter->pages,
                 'pages_count' => $chapter->pages ? $chapter->pages->count() : 0,
                 'processed_at' => $chapter->processed_at,

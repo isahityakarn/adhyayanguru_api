@@ -129,7 +129,6 @@ class ProgressController extends Controller
                 if (!$progress->completed_at) {
                     $progress->completed_at = now();
                 }
-                self::ensureQuizForChapter($chapterId);
             }
 
             $progress->last_accessed_at = now();
