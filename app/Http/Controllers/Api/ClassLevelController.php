@@ -19,4 +19,21 @@ class ClassLevelController extends Controller
             'data' => $classLevels,
         ]);
     }
+
+    public function store(\Illuminate\Http\Request $request)
+    {
+        $request->validate([
+            'name' => 'required|string|max:255',
+        ]);
+
+        $classLevel = ClassLevel::create([
+            'name' => $request->name,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'class' => $classLevel,
+            'message' => 'Class created successfully',
+        ]);
+    }
 }

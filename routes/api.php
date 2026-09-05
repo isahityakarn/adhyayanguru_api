@@ -92,6 +92,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('admin')->middleware(['admin', 'throttle:api'])->group(function () {
         Route::get('/dashboard', [AdminDashboardController::class, 'dashboard']);
         Route::get('/classes', [AdminDashboardController::class, 'classes']);
+        Route::post('/classes', [ClassLevelController::class, 'store']);
         Route::get('/classes/{classId}', [AdminDashboardController::class, 'classDetails']);
         Route::put('/classes/{classId}', [AdminDashboardController::class, 'updateClass']);
         Route::get('/classes/{classId}/subjects', [AdminDashboardController::class, 'subjects']);
