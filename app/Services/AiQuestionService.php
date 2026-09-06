@@ -165,7 +165,7 @@ PROMPT;
         Log::info('Gemini failed to generate questions, falling back to Hugging Face Spark-X2.5-4B...');
         try {
             $hfApiKey = env('HUGGINGFACE_API_KEY');
-            $endpoint = 'https://api-inference.huggingface.co/models/XHToken/Spark-X2.5-4B/v1/chat/completions';
+            $endpoint = 'https://router.huggingface.co/hf-inference/v1/chat/completions';
             
             $headers = ['Content-Type' => 'application/json'];
             if (!empty($hfApiKey)) {
@@ -787,7 +787,7 @@ PROMPT;
         Log::info('Gemini failed to generate questions, falling back to Hugging Face Spark-X2.5-4B...');
         try {
             $hfApiKey = env('HUGGINGFACE_API_KEY');
-            $endpoint = 'https://api-inference.huggingface.co/models/XHToken/Spark-X2.5-4B/v1/chat/completions';
+            $endpoint = 'https://router.huggingface.co/hf-inference/v1/chat/completions';
             
             $headers = ['Content-Type' => 'application/json'];
             if (!empty($hfApiKey)) {
