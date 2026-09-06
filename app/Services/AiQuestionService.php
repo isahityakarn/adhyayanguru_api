@@ -17,9 +17,10 @@ class AiQuestionService
      * Models to try in order of priority.
      */
     protected array $models = [
+        'gemini-3.8-flash',
+        'gemini-3.7-flash',
         'gemini-3.5-flash',
-        'gemini-2.5-flash',
-        'gemini-2.5-pro',
+        'gemini-3.1-flash-lite',
     ];
 
     /**
