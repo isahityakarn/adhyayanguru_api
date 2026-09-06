@@ -17,9 +17,9 @@ class AiQuestionService
      * Models to try in order of priority.
      */
     protected array $models = [
-        'gemini-1.5-flash',
-        'gemini-1.5-pro',
-        'gemini-1.0-pro',
+        'gemini-3.5-flash',
+        'gemini-2.5-flash',
+        'gemini-2.5-pro',
     ];
 
     /**
@@ -39,18 +39,12 @@ class AiQuestionService
             // Trim content to reasonable length for token limits (approx 8000 chars)
             $contentSnippet = mb_substr($content, 0, 8000, 'UTF-8');
 
-            $prompt = <<<PROMPT
-You are an expert curriculum and educational assessment designer.
-Based on the following chapter content, generate exactly {$mcqCount} Multiple Choice Questions (MCQ) and {$subjectiveCount} Conceptual Short Answer questions.
-
-Chapter Title: {$chapterTitle}
-Subject: {$subjectName}
-
-For MCQs, provide 4 plausible options (letters A, B, C, D) with exactly one correct answer.
-
-RETURN STRICTLY A VALID JSON OBJECT. No explanations before or after the JSON.
-The JSON object MUST have the following structure exactly:
-{
+            $taskDescription = "";
+            $jsonStructure = "{\n";
+            
+            if ($mcqCount > 0 && $subjectiveCount > 0) {
+                $taskDescription = "generate exactly {$mcqCount} Multiple Choice Questions (MCQ) and {$subjectiveCount} Conceptual Short Answer questions.";
+                $jsonStructure .= <<<JSON
   "mcq": [
     {
       "id": 1,
@@ -70,7 +64,53 @@ The JSON object MUST have the following structure exactly:
       "question": "Short answer question text?"
     }
   ]
-}
+JSON;
+            } elseif ($mcqCount > 0) {
+                $taskDescription = "generate exactly {$mcqCount} Multiple Choice Questions (MCQ). DO NOT generate subjective questions.";
+                $jsonStructure .= <<<JSON
+  "mcq": [
+    {
+      "id": 1,
+      "question": "Clear question text here?",
+      "options": {
+        "A": "Option 1",
+        "B": "Option 2",
+        "C": "Option 3",
+        "D": "Option 4"
+      },
+      "answer": "B"
+    }
+  ]
+JSON;
+            } elseif ($subjectiveCount > 0) {
+                $taskDescription = "generate exactly {$subjectiveCount} Conceptual Short Answer questions. DO NOT generate MCQs.";
+                $jsonStructure .= <<<JSON
+  "subjective_questions": [
+    {
+      "id": 1,
+      "question": "Short answer question text?"
+    }
+  ]
+JSON;
+            }
+            $jsonStructure .= "\n}";
+
+            $mcqInstructions = $mcqCount > 0 ? "For MCQs, provide 4 plausible options (letters A, B, C, D) with exactly one correct answer based ONLY on the text." : "";
+            $subjectiveInstructions = $subjectiveCount > 0 ? "For Subjective questions, ensure they test conceptual understanding of the provided text." : "";
+
+            $prompt = <<<PROMPT
+You are an expert curriculum and educational assessment designer.
+Based STRICTLY on the following chapter content (do not use outside knowledge), {$taskDescription}
+
+Chapter Title: {$chapterTitle}
+Subject: {$subjectName}
+
+{$mcqInstructions}
+{$subjectiveInstructions}
+
+RETURN STRICTLY A VALID JSON OBJECT. No explanations before or after the JSON.
+The JSON object MUST have the following structure exactly:
+{$jsonStructure}
 
 Chapter Content:
 {$contentSnippet}
@@ -98,6 +138,7 @@ PROMPT;
                     if ($response->successful()) {
                         $responseData = $response->json();
                         $text = $responseData['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                        Log::info("Raw AI Output from {$model}:", ['text' => $text]);
                         $parsed = $this->cleanAndParseJson($text);
 
                         if (! empty($parsed) && is_array($parsed)) {
@@ -106,7 +147,7 @@ PROMPT;
                                 'chapter' => $chapterTitle,
                             ]);
 
-                            return $this->formatQuestions($parsed, $chapterTitle);
+                            return $this->formatQuestions($parsed, $chapterTitle, $mcqCount, $subjectiveCount);
                         }
                     } else {
                         Log::warning("Gemini model {$model} returned error", [
@@ -120,10 +161,8 @@ PROMPT;
             }
         }
 
-        // Fallback generator if AI API fails or quota exceeded
-        Log::info('Using fallback heuristic question generator for chapter', ['title' => $chapterTitle]);
-
-        return $this->generateFallbackQuestions($content, $chapterTitle, $subjectName, $mcqCount + $subjectiveCount);
+        Log::error('All Gemini AI models failed to generate questions for chapter', ['title' => $chapterTitle]);
+        throw new \Exception("AI API failed to generate questions. Please try again. The text might be too large or the API might be overloaded.");
     }
 
     /**
@@ -170,7 +209,7 @@ PROMPT;
     /**
      * Validate and format question items.
      */
-    protected function formatQuestions(array $rawQuestions, string $chapterTitle): array
+    protected function formatQuestions(array $rawQuestions, string $chapterTitle, int $mcqCount = -1, int $subjectiveCount = -1): array
     {
         $formatted = [];
 
@@ -229,6 +268,14 @@ PROMPT;
             }
 
             $type = in_array($q['question_type'] ?? '', ['mcq', 'short_answer']) ? $q['question_type'] : 'mcq';
+            
+            // If we know only subjective was requested, force it to short_answer
+            if ($mcqCount === 0 && $subjectiveCount > 0) {
+                $type = 'short_answer';
+            } elseif ($mcqCount > 0 && $subjectiveCount === 0) {
+                $type = 'mcq';
+            }
+
             $difficulty = in_array($q['difficulty'] ?? '', ['easy', 'medium', 'hard']) ? $q['difficulty'] : 'medium';
 
             $options = null;
@@ -259,24 +306,25 @@ PROMPT;
     /**
      * Heuristic fallback question generator when external AI is unavailable.
      */
-    protected function generateFallbackQuestions(string $content, string $chapterTitle, string $subjectName, int $count): array
+    protected function generateFallbackQuestions(string $content, string $chapterTitle, string $subjectName, int $mcqCount, int $subjectiveCount): array
     {
         $questions = [];
 
-        // 1. General chapter overview question
-        $questions[] = [
-            'question_text' => "What is the primary subject matter discussed in '{$chapterTitle}'?",
-            'question_type' => 'mcq',
-            'options' => [
-                ['letter' => 'A', 'text' => "Core fundamental concepts of {$chapterTitle}"],
-                ['letter' => 'B', 'text' => 'Historical background of unrelated civilizations'],
-                ['letter' => 'C', 'text' => 'Mathematical formulas outside the curriculum'],
-                ['letter' => 'D', 'text' => 'General unrelated trivia'],
-            ],
-            'correct_answer' => 'A',
-            'explanation' => "The chapter '{$chapterTitle}' focuses on the core concepts and principles of the topic.",
-            'difficulty' => 'easy',
-        ];
+        if ($mcqCount > 0) {
+            $questions[] = [
+                'question_text' => "What is the primary subject matter discussed in '{$chapterTitle}'?",
+                'question_type' => 'mcq',
+                'options' => [
+                    ['letter' => 'A', 'text' => "Core fundamental concepts of {$chapterTitle}"],
+                    ['letter' => 'B', 'text' => 'Historical background of unrelated civilizations'],
+                    ['letter' => 'C', 'text' => 'Mathematical formulas outside the curriculum'],
+                    ['letter' => 'D', 'text' => 'General unrelated trivia'],
+                ],
+                'correct_answer' => 'A',
+                'explanation' => "The chapter '{$chapterTitle}' focuses on the core concepts and principles of the topic.",
+                'difficulty' => 'easy',
+            ];
+        }
 
         // 2. Extract key sentences from content to create comprehension questions
         $sentences = preg_split('/(?<=[.?!])\s+/u', strip_tags($content));
@@ -288,7 +336,7 @@ PROMPT;
 
         $sentenceCount = count($meaningfulSentences);
 
-        if ($sentenceCount >= 1) {
+        if ($sentenceCount >= 1 && $mcqCount > 0) {
             $s1 = trim($meaningfulSentences[0]);
             $questions[] = [
                 'question_text' => "Based on the text: '{$s1}', which statement is accurate?",
@@ -305,19 +353,19 @@ PROMPT;
             ];
         }
 
-        if ($sentenceCount >= 2) {
+        if ($sentenceCount >= 2 && $subjectiveCount > 0) {
             $s2 = trim($meaningfulSentences[min(2, $sentenceCount - 1)]);
             $questions[] = [
                 'question_text' => "According to the chapter content, what key principle is illustrated by: '{$s2}'?",
                 'question_type' => 'short_answer',
                 'options' => null,
                 'correct_answer' => $s2,
-                'explanation' => 'Review the section discussing this principle in detail.',
+                'explanation' => null,
                 'difficulty' => 'medium',
             ];
         }
 
-        if ($sentenceCount >= 3) {
+        if ($sentenceCount >= 3 && $mcqCount > 0) {
             $s3 = trim($meaningfulSentences[min(4, $sentenceCount - 1)]);
             $questions[] = [
                 'question_text' => "How does the following concept connect to the chapter's objectives: '{$s3}'?",
@@ -335,16 +383,18 @@ PROMPT;
         }
 
         // Summary question
-        $questions[] = [
-            'question_text' => "Summarize the key takeaways and learnings from '{$chapterTitle}'.",
-            'question_type' => 'short_answer',
-            'options' => null,
-            'correct_answer' => "The chapter '{$chapterTitle}' teaches core fundamentals, structured problem solving, and analytical thinking.",
-            'explanation' => 'Students should explain key definitions, formulas/rules, and practical examples.',
-            'difficulty' => 'easy',
-        ];
+        if ($subjectiveCount > 0) {
+            $questions[] = [
+                'question_text' => "Summarize the key takeaways and learnings from '{$chapterTitle}'.",
+                'question_type' => 'short_answer',
+                'options' => null,
+                'correct_answer' => "The chapter '{$chapterTitle}' teaches core fundamentals, structured problem solving, and analytical thinking.",
+                'explanation' => null,
+                'difficulty' => 'hard',
+            ];
+        }
 
-        return array_slice($questions, 0, $count);
+        return $questions;
     }
 
     /**

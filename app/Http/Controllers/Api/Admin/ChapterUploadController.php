@@ -406,6 +406,8 @@ class ChapterUploadController extends Controller
     {
         $request->validate([
             'replace_existing' => ['nullable', 'boolean'],
+            'mcq_count' => ['nullable', 'integer', 'min:0'],
+            'subjective_count' => ['nullable', 'integer', 'min:0'],
         ]);
 
         try {
@@ -436,8 +438,8 @@ class ChapterUploadController extends Controller
                 $chapter->title,
                 $chapter->subject->name ?? '',
                 [
-                    'mcq_count' => 50,
-                    'subjective_count' => 20,
+                    'mcq_count' => $request->input('mcq_count', 50),
+                    'subjective_count' => $request->input('subjective_count', 20),
                 ]
             );
 
