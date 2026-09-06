@@ -114,10 +114,10 @@ class AiTutorController extends Controller
                 'maxOutputTokens' => 2048,
             ]);
 
-            // 2. Secondary AI Engine: Fallback to Hugging Face Qwen 2.5
+            // 2. Secondary AI Engine: Fallback to Hugging Face Spark-X2.5-4B
             if (empty($aiResponse)) {
-                Log::info('Gemini API unreachable, falling back to Hugging Face Qwen...');
-                $aiResponse = $this->callHuggingFaceQwenSpace($conversationHistory, $systemContext);
+                Log::info('Gemini API unreachable, falling back to Hugging Face Spark-X2.5-4B...');
+                $aiResponse = $this->callHuggingFaceFallback($conversationHistory, $systemContext);
             }
 
             // 3. Tertiary Fallback: Smart Educational Fallback
@@ -148,9 +148,9 @@ class AiTutorController extends Controller
     }
 
     /**
-     * Call Hugging Face Qwen 2.5 Gradio Space / HF Inference API as Primary AI Engine.
+     * Call Hugging Face API as Primary AI Engine fallback.
      */
-    private function callHuggingFaceQwenSpace(array $conversationHistory, string $systemContext): ?string
+    private function callHuggingFaceFallback(array $conversationHistory, string $systemContext): ?string
     {
         $hfApiKey = env('HUGGINGFACE_API_KEY');
 
@@ -175,8 +175,7 @@ class AiTutorController extends Controller
         // Method 1: Try Hugging Face Chat Completions Endpoint (Router & Direct API)
         $hfEndpoints = [
             'https://router.huggingface.co/hf-inference/v1/chat/completions',
-            'https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct/v1/chat/completions',
-            'https://api-inference.huggingface.co/models/meta-llama/Llama-3.3-70B-Instruct/v1/chat/completions',
+            'https://api-inference.huggingface.co/models/XHToken/Spark-X2.5-4B/v1/chat/completions',
         ];
 
         foreach ($hfEndpoints as $endpoint) {
@@ -189,7 +188,7 @@ class AiTutorController extends Controller
                 $response = Http::timeout(18)
                     ->withHeaders($headers)
                     ->post($endpoint, [
-                        'model' => 'Qwen/Qwen2.5-72B-Instruct',
+                        'model' => 'XHToken/Spark-X2.5-4B',
                         'messages' => $hfMessages,
                         'temperature' => 0.7,
                         'max_tokens' => 2048,
@@ -199,12 +198,12 @@ class AiTutorController extends Controller
                     $json = $response->json();
                     $reply = $json['choices'][0]['message']['content'] ?? null;
                     if (!empty($reply)) {
-                        Log::info("HF Qwen API success from endpoint: {$endpoint}");
+                        Log::info("HF Spark API success from endpoint: {$endpoint}");
                         return trim($reply);
                     }
                 }
             } catch (\Exception $e) {
-                Log::warning("HF Qwen Chat Completions Exception on {$endpoint}: " . $e->getMessage());
+                Log::warning("HF Spark Chat Completions Exception on {$endpoint}: " . $e->getMessage());
             }
         }
 
