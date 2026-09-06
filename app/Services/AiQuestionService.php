@@ -466,8 +466,20 @@ PROMPT;
             $quiz->total_written = QuizWrittenQuestion::where('quiz_id', $quiz->id)->count();
             $quiz->save();
 
-            // Sync legacy questions summary JSON in chapters table (if still needed by frontend)
-            $allChapterQuestions = array_merge($createdMcqs, $createdWritten);
+            // Sync ALL questions (legacy and new) back to chapter->questions JSON
+            $allMcqs = QuizQuestion::where('quiz_id', $quiz->id)->get()->map(function($q) {
+                $qArr = $q->toArray();
+                $qArr['question_type'] = 'mcq';
+                return $qArr;
+            })->toArray();
+            
+            $allWritten = QuizWrittenQuestion::where('quiz_id', $quiz->id)->get()->map(function($q) {
+                $qArr = $q->toArray();
+                $qArr['question_type'] = 'short_answer';
+                return $qArr;
+            })->toArray();
+
+            $allChapterQuestions = array_merge($allMcqs, $allWritten);
             $chapter->questions = collect($allChapterQuestions)->toJson();
             $chapter->processed_at = now();
             $chapter->save();

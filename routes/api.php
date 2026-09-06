@@ -115,6 +115,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/chapters/{id}/reprocess', [ChapterUploadController::class, 'reprocess']);
         Route::post('/chapters/{id}/generate-questions', [ChapterUploadController::class, 'generateMoreQuestions']);
         Route::delete('/chapters/{id}', [ChapterUploadController::class, 'deleteChapter']);
+        Route::delete('/questions/{id}', [ChapterUploadController::class, 'deleteQuestion']);
         Route::post('/batch-process', [ChapterUploadController::class, 'batchProcess']);
 
         // Subjects CRUD

@@ -553,6 +553,7 @@ class ChapterUploadController extends Controller
         $allQuestions = collect();
         foreach ($mcqQuestions as $mcq) {
             $allQuestions->push([
+                'id' => $mcq->id,
                 'question_type' => 'mcq',
                 'question_text' => $mcq->question_text,
                 'options' => is_string($mcq->options) ? json_decode($mcq->options, true) : $mcq->options,
@@ -562,6 +563,7 @@ class ChapterUploadController extends Controller
         }
         foreach ($writtenQuestions as $written) {
             $allQuestions->push([
+                'id' => $written->id,
                 'question_type' => 'short_answer',
                 'question_text' => $written->question_text,
                 'expected_answer' => $written->expected_answer,
@@ -601,6 +603,55 @@ class ChapterUploadController extends Controller
                 'created_at' => $chapter->created_at,
             ],
         ]);
+    }
+
+    /**
+     * Delete a specific question by ID (MCQ or Subjective).
+     */
+    public function deleteQuestion($id)
+    {
+        $mcq = \App\Models\QuizQuestion::find($id);
+        $written = \App\Models\QuizWrittenQuestion::find($id);
+        $quizId = null;
+
+        if ($mcq) {
+            $quizId = $mcq->quiz_id;
+            $mcq->delete();
+        } elseif ($written) {
+            $quizId = $written->quiz_id;
+            $written->delete();
+        } else {
+            return response()->json(['message' => 'Question not found.'], 404);
+        }
+
+        if ($quizId) {
+            $quiz = \App\Models\Quiz::find($quizId);
+            if ($quiz) {
+                $quiz->total_mcq = \App\Models\QuizQuestion::where('quiz_id', $quizId)->count();
+                $quiz->total_written = \App\Models\QuizWrittenQuestion::where('quiz_id', $quizId)->count();
+                $quiz->save();
+
+                $chapter = \App\Models\Chapter::find($quiz->chapter_id);
+                if ($chapter) {
+                    $allMcqs = \App\Models\QuizQuestion::where('quiz_id', $quizId)->get()->map(function($q) {
+                        $qArr = $q->toArray();
+                        $qArr['question_type'] = 'mcq';
+                        return $qArr;
+                    })->toArray();
+                    
+                    $allWritten = \App\Models\QuizWrittenQuestion::where('quiz_id', $quizId)->get()->map(function($q) {
+                        $qArr = $q->toArray();
+                        $qArr['question_type'] = 'short_answer';
+                        return $qArr;
+                    })->toArray();
+                    
+                    $chapter->questions = collect(array_merge($allMcqs, $allWritten))->toJson();
+                    $chapter->save();
+                }
+            }
+        }
+
+        return response()->json(['message' => 'Question deleted successfully']);
     }
 
     /**
