@@ -161,7 +161,53 @@ PROMPT;
             }
         }
 
-        Log::error('All Gemini AI models failed to generate questions for chapter', ['title' => $chapterTitle]);
+        // --- HUGGING FACE FALLBACK ---
+        Log::info('Gemini failed to generate questions, falling back to Hugging Face Spark-X2.5-4B...');
+        try {
+            $hfApiKey = env('HUGGINGFACE_API_KEY');
+            $endpoint = 'https://api-inference.huggingface.co/models/XHToken/Spark-X2.5-4B/v1/chat/completions';
+            
+            $headers = ['Content-Type' => 'application/json'];
+            if (!empty($hfApiKey)) {
+                $headers['Authorization'] = 'Bearer ' . $hfApiKey;
+            }
+
+            $response = Http::timeout(180)
+                ->withHeaders($headers)
+                ->post($endpoint, [
+                    'model' => 'XHToken/Spark-X2.5-4B',
+                    'messages' => [
+                        ['role' => 'user', 'content' => $prompt]
+                    ],
+                    'temperature' => 0.6,
+                    'max_tokens' => 8192,
+                ]);
+
+            if ($response->successful()) {
+                $responseData = $response->json();
+                $text = $responseData['choices'][0]['message']['content'] ?? '';
+                Log::info("Raw AI Output from HF Spark:", ['text' => $text]);
+                $parsed = $this->cleanAndParseJson($text);
+
+                if (!empty($parsed) && is_array($parsed)) {
+                    Log::info("Successfully generated questions using HF Spark", [
+                        'count' => count($parsed),
+                        'chapter' => $chapterTitle,
+                    ]);
+
+                    return $this->formatQuestions($parsed, $chapterTitle, $mcqCount, $subjectiveCount);
+                }
+            } else {
+                Log::warning("HF Spark model returned error", [
+                    'status' => $response->status(),
+                    'body' => mb_substr($response->body(), 0, 300),
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::warning("Exception calling HF Spark model: " . $e->getMessage());
+        }
+
+        Log::error('All Gemini and HF AI models failed to generate questions for chapter', ['title' => $chapterTitle]);
         throw new \Exception("AI API failed to generate questions. Please try again. The text might be too large or the API might be overloaded.");
     }
 
@@ -735,6 +781,41 @@ PROMPT;
             } catch (\Exception $e) {
                 Log::warning("Gemini model {$model} error: " . $e->getMessage());
             }
+        }
+
+        // --- HUGGING FACE FALLBACK ---
+        Log::info('Gemini failed to generate questions, falling back to Hugging Face Spark-X2.5-4B...');
+        try {
+            $hfApiKey = env('HUGGINGFACE_API_KEY');
+            $endpoint = 'https://api-inference.huggingface.co/models/XHToken/Spark-X2.5-4B/v1/chat/completions';
+            
+            $headers = ['Content-Type' => 'application/json'];
+            if (!empty($hfApiKey)) {
+                $headers['Authorization'] = 'Bearer ' . $hfApiKey;
+            }
+
+            $response = Http::timeout(180)
+                ->withHeaders($headers)
+                ->post($endpoint, [
+                    'model' => 'XHToken/Spark-X2.5-4B',
+                    'messages' => [
+                        ['role' => 'user', 'content' => $prompt]
+                    ],
+                    'temperature' => 0.5,
+                    'max_tokens' => 4096,
+                ]);
+
+            if ($response->successful()) {
+                $responseData = $response->json();
+                $text = $responseData['choices'][0]['message']['content'] ?? '';
+                $parsed = $this->cleanAndParseJson($text);
+
+                if (!empty($parsed) && is_array($parsed)) {
+                    return $parsed;
+                }
+            }
+        } catch (\Exception $e) {
+            Log::warning("HF Spark model error: " . $e->getMessage());
         }
 
         return null;
