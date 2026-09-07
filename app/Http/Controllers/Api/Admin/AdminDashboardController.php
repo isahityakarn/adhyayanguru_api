@@ -108,12 +108,13 @@ class AdminDashboardController extends Controller
 
     public function chapters(Request $request, $subjectId)
     {
-        $query = Chapter::where('subject_id', $subjectId);
+        $query = Chapter::where('subject_id', $subjectId)->with('quiz');
         if ($request->filled('search')) $query->where('title', 'like', '%' . $request->string('search') . '%');
         $chapters = $query->orderBy('chapter_number')->paginate(min((int) $request->get('per_page', 20), 100));
         return $this->success(collect($chapters->items())->map(fn ($chapter) => [
             'id' => $chapter->id, 'name' => $chapter->title, 'chapter_number' => $chapter->chapter_number,
             'pdf_count' => $chapter->source_file_url ? 1 : 0, 'last_updated' => optional($chapter->updated_at)->toDateString(),
+            'questions_count' => $chapter->quiz ? ($chapter->quiz->total_mcq + $chapter->quiz->total_written) : 0,
         ]), 'Chapters fetched successfully', $this->pagination($chapters));
     }
 
