@@ -19,7 +19,10 @@ return Application::configure(basePath: dirname(__DIR__))
             \Illuminate\Http\Middleware\ValidatePostSize::class,
             \App\Http\Middleware\ValidatePostSize::class
         );
-        $middleware->alias(['admin' => \App\Http\Middleware\EnsureAdmin::class]);
+        $middleware->alias([
+            'admin'       => \App\Http\Middleware\EnsureAdmin::class,
+            'super_admin' => \App\Http\Middleware\EnsureSuperAdmin::class,
+        ]);
 
         $middleware->redirectGuestsTo(function (Request $request) {
             if ($request->is('api/*')) {

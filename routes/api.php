@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\Admin\ChapterUploadController;
 use App\Http\Controllers\Api\Admin\AdminDashboardController;
+use App\Http\Controllers\Api\Admin\AdminUserController;
 use App\Http\Controllers\Api\AiTutorController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BoardController;
@@ -138,6 +139,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/quizzes/{quizId}/toggle-publish', [AdminQuizController::class, 'togglePublish']);
         Route::get('/quizzes/{quizId}/attempts', [AdminQuizController::class, 'viewStudentAttempts']);
         Route::get('/quizzes/{quizId}/export', [AdminQuizController::class, 'exportResults']);
+
+        // User management (admin access)
+        Route::get('/users', [AdminUserController::class, 'index']);
+        Route::get('/users/{id}/progress', [AdminUserController::class, 'progress']);
+        Route::patch('/users/{id}/status', [AdminUserController::class, 'updateStatus']);
     });
 });
 
