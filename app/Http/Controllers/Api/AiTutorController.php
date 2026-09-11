@@ -12,16 +12,17 @@ use Illuminate\Support\Facades\Log;
 class AiTutorController extends Controller
 {
     /**
-     * Gemini models in order of priority.
+     * Gemini models in order of priority (Real Google Gemini models).
      */
     private array $candidateModels = [
-        'gemini-3.6-flash',
-        'gemini-3.5-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-flash-latest',
-        'gemini-pro-latest',
-        'gemini-2.5-pro',
+        'gemini-1.5-flash',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash-8b',
+        'gemini-1.5-pro',
     ];
+
+    private static bool $geminiFailed = false;
+    private static bool $hfFailed = false;
 
     /**
      * Handle AI Tutor conversation with Google Gemini.
@@ -106,7 +107,7 @@ class AiTutorController extends Controller
                 'parts' => [['text' => $message]],
             ];
 
-            // 1. Primary AI Engine: Google Gemini API (gemini-3.6-flash)
+            // 1. Primary AI Engine: Google Gemini API
             $aiResponse = $this->callGeminiApi($conversationHistory, [
                 'temperature' => 0.7,
                 'topK' => 40,
@@ -114,13 +115,12 @@ class AiTutorController extends Controller
                 'maxOutputTokens' => 2048,
             ]);
 
-            // 2. Secondary AI Engine: Fallback to Hugging Face Spark-X2.5-4B
+            // 2. Secondary AI Engine: Fallback to Hugging Face Spark
             if (empty($aiResponse)) {
-                Log::info('Gemini API unreachable, falling back to Hugging Face Spark-X2.5-4B...');
                 $aiResponse = $this->callHuggingFaceFallback($conversationHistory, $systemContext);
             }
 
-            // 3. Tertiary Fallback: Smart Educational Fallback
+            // 3. Tertiary Fallback: Smart Educational Fallback (Guaranteed fast & high quality)
             if (empty($aiResponse)) {
                 $aiResponse = $this->generateEducationalFallback($message, $context);
             }
@@ -152,6 +152,10 @@ class AiTutorController extends Controller
      */
     private function callHuggingFaceFallback(array $conversationHistory, string $systemContext): ?string
     {
+        if (self::$hfFailed) {
+            return null;
+        }
+
         $hfApiKey = env('HUGGINGFACE_API_KEY');
 
         // Formulate messages for OpenAI/HuggingFace chat format
@@ -172,81 +176,47 @@ class AiTutorController extends Controller
             }
         }
 
-        // Method 1: Try Hugging Face Chat Completions Endpoint (Router & Direct API)
-        $hfEndpoints = [
-            'https://router.huggingface.co/hf-inference/v1/chat/completions',
-            'https://api-inference.huggingface.co/models/XHToken/Spark-X2.5-4B/v1/chat/completions',
-        ];
-
-        foreach ($hfEndpoints as $endpoint) {
-            try {
-                $headers = ['Content-Type' => 'application/json'];
-                if (!empty($hfApiKey)) {
-                    $headers['Authorization'] = 'Bearer ' . $hfApiKey;
-                }
-
-                $response = Http::timeout(18)
-                    ->withHeaders($headers)
-                    ->post($endpoint, [
-                        'model' => 'XHToken/Spark-X2.5-4B',
-                        'messages' => $hfMessages,
-                        'temperature' => 0.7,
-                        'max_tokens' => 2048,
-                    ]);
-
-                if ($response->successful()) {
-                    $json = $response->json();
-                    $reply = $json['choices'][0]['message']['content'] ?? null;
-                    if (!empty($reply)) {
-                        Log::info("HF Spark API success from endpoint: {$endpoint}");
-                        return trim($reply);
-                    }
-                }
-            } catch (\Exception $e) {
-                Log::warning("HF Spark Chat Completions Exception on {$endpoint}: " . $e->getMessage());
-            }
-        }
-
-        // Method 2: Try Hugging Face Gradio Space (Qwen 2.5 Gradio Space Proxy)
+        $endpoint = 'https://router.huggingface.co/hf-inference/v1/chat/completions';
         try {
-            $gradioUrl = env('HF_QWEN_GRADIO_SPACE_URL', 'https://qwen-qwen2-5-72b-instruct.hf.space/gradio_api/call/predict');
-            
-            $lastUserMessage = end($hfMessages)['content'] ?? '';
-            $postResponse = Http::timeout(12)->post($gradioUrl, [
-                'data' => [$lastUserMessage, [], $systemContext],
-            ]);
+            $headers = ['Content-Type' => 'application/json'];
+            if (!empty($hfApiKey)) {
+                $headers['Authorization'] = 'Bearer ' . $hfApiKey;
+            }
 
-            if ($postResponse->successful()) {
-                $eventId = $postResponse->json('event_id');
-                if (!empty($eventId)) {
-                    $streamResponse = Http::timeout(18)->get("{$gradioUrl}/{$eventId}");
-                    if ($streamResponse->successful()) {
-                        $lines = explode("\n", $streamResponse->body());
-                        for ($i = count($lines) - 1; $i >= 0; $i--) {
-                            if (str_starts_with($lines[$i], 'data: ')) {
-                                $parsed = json_decode(substr($lines[$i], 6), true);
-                                $text = $parsed[0] ?? $parsed['text'] ?? null;
-                                if (!empty($text) && is_string($text)) {
-                                    Log::info('Qwen 2.5 Gradio Space response success');
-                                    return trim($text);
-                                }
-                            }
-                        }
-                    }
+            $response = Http::timeout(5)
+                ->connectTimeout(3)
+                ->withHeaders($headers)
+                ->post($endpoint, [
+                    'model' => 'XHToken/Spark-X2.5-4B',
+                    'messages' => $hfMessages,
+                    'temperature' => 0.7,
+                    'max_tokens' => 1024,
+                ]);
+
+            if ($response->successful()) {
+                $json = $response->json();
+                $reply = $json['choices'][0]['message']['content'] ?? null;
+                if (!empty($reply)) {
+                    return trim($reply);
                 }
             }
-        } catch (\Exception $ex) {
-            Log::warning('HF Qwen Gradio Space Exception: ' . $ex->getMessage());
+        } catch (\Exception $e) {
+            Log::warning("HF Spark Chat Completions Exception: " . $e->getMessage());
+            self::$hfFailed = true;
         }
 
         return null;
     }
 
     /**
-     * Call Gemini API with multi-model resilient fallback.
+     * Call Gemini API with fast multi-model resilient fallback.
      */
     private function callGeminiApi(array $contents, array $generationConfig = []): ?string
     {
+        if (self::$geminiFailed) {
+            return null;
+        }
+
         $apiKey = config('services.gemini.api_key');
 
         if (empty($apiKey)) {
@@ -254,14 +224,13 @@ class AiTutorController extends Controller
             return null;
         }
 
-        $versions = ['v1beta', 'v1'];
-
         foreach ($this->candidateModels as $model) {
-            foreach ($versions as $version) {
-                try {
-                    $url = "https://generativelanguage.googleapis.com/{$version}/models/{$model}:generateContent?key={$apiKey}";
+            try {
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
-                    $response = Http::timeout(25)->post($url, [
+                $response = Http::timeout(6)
+                    ->connectTimeout(3)
+                    ->post($url, [
                         'contents' => $contents,
                         'generationConfig' => !empty($generationConfig) ? $generationConfig : [
                             'temperature' => 0.7,
@@ -271,18 +240,21 @@ class AiTutorController extends Controller
                         ],
                     ]);
 
-                    if ($response->successful()) {
-                        $responseData = $response->json();
-                        $text = $responseData['candidates'][0]['content']['parts'][0]['text'] ?? null;
-                        if (!empty($text)) {
-                            return trim($text);
-                        }
+                if ($response->successful()) {
+                    $responseData = $response->json();
+                    $text = $responseData['candidates'][0]['content']['parts'][0]['text'] ?? null;
+                    if (!empty($text)) {
+                        return trim($text);
                     }
+                }
 
-                    // Log failure and try next model
-                    Log::warning("Gemini model {$model} ({$version}) failed: " . $response->status() . " - " . substr($response->body(), 0, 200));
-                } catch (\Exception $ex) {
-                    Log::warning("Gemini request exception on {$model} ({$version}): " . $ex->getMessage());
+                // Log failure and try next model
+                Log::warning("Gemini model {$model} failed: " . $response->status() . " - " . substr($response->body(), 0, 150));
+            } catch (\Exception $ex) {
+                Log::warning("Gemini request exception on {$model}: " . $ex->getMessage());
+                if (str_contains($ex->getMessage(), 'cURL') || str_contains($ex->getMessage(), 'timed out') || str_contains($ex->getMessage(), 'Could not resolve')) {
+                    self::$geminiFailed = true;
+                    return null;
                 }
             }
         }

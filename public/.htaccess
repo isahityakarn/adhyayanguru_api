@@ -26,11 +26,10 @@
 
 # CORS Headers
 <IfModule mod_headers.c>
-    # Allow from specific origins
-    SetEnvIf Origin "https://adhyayanguru\.shop$" AccessControlAllowOrigin=$0
-    SetEnvIf Origin "https://adhyayanguruapi\.adhyayanguru\.shop$" AccessControlAllowOrigin=$0
-    SetEnvIf Origin "http://localhost(:\d+)?$" AccessControlAllowOrigin=$0
-    SetEnvIf Origin "http://127\.0\.0\.1(:\d+)?$" AccessControlAllowOrigin=$0
+    # Allow from specific origins (including www and api subdomains)
+    SetEnvIf Origin "^https?://([a-zA-Z0-9-]+\.)*adhyayanguru\.shop(:[0-9]+)?$" AccessControlAllowOrigin=$0
+    SetEnvIf Origin "^http://localhost(:\d+)?$" AccessControlAllowOrigin=$0
+    SetEnvIf Origin "^http://127\.0\.0\.1(:\d+)?$" AccessControlAllowOrigin=$0
 
     Header always set Access-Control-Allow-Origin "%{AccessControlAllowOrigin}e" env=AccessControlAllowOrigin
     Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
