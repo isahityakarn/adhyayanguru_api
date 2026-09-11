@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Board;
 use App\Models\ClassLevel;
+use App\Models\Progress;
 use App\Models\Subject;
 use Illuminate\Http\Request;
 
@@ -35,7 +36,7 @@ class SubjectController extends Controller
             'board_id' => ['nullable', 'exists:boards,id'],
         ]);
 
-        $query = Subject::with(['classLevel', 'board'])->withCount('chapters');
+        $query = Subject::with(['classLevel', 'board', 'chapters:id,subject_id'])->withCount('chapters');
 
         // Filter by class_id if provided
         if ($request->filled('class_id')) {
@@ -49,8 +50,36 @@ class SubjectController extends Controller
 
         $subjects = $query->orderBy('name')->get();
 
+        $user = $request->user() ?? auth('sanctum')->user() ?? auth()->user();
+        $userProgress = collect();
+        if ($user) {
+            $userProgress = Progress::where('student_id', $user->id)->get()->keyBy('chapter_id');
+        }
+
         return response()->json([
-            'subjects' => $subjects->map(function ($subject) {
+            'subjects' => $subjects->map(function ($subject) use ($userProgress) {
+                $totalChapters = $subject->chapters_count ?? 0;
+                $completedChapters = 0;
+                $progressPct = 0;
+
+                if ($userProgress->isNotEmpty() && $subject->chapters) {
+                    $totalPct = 0;
+                    foreach ($subject->chapters as $chap) {
+                        $p = $userProgress->get($chap->id);
+                        if ($p && ($p->status === 'completed' || $p->percent_complete >= 100)) {
+                            $completedChapters++;
+                            $totalPct += 100;
+                        } elseif ($p) {
+                            $totalPct += (int) $p->percent_complete;
+                        }
+                    }
+                    if ($totalChapters > 0) {
+                        $progressPct = (int) round($totalPct / $totalChapters);
+                    }
+                }
+
+                $isCompleted = $totalChapters > 0 && $completedChapters >= $totalChapters;
+
                 return [
                     'id' => $subject->id,
                     'name' => $subject->name,
@@ -62,7 +91,10 @@ class SubjectController extends Controller
                         'id' => $subject->board->id ?? null,
                         'name' => $subject->board->name ?? '',
                     ],
-                    'chapters_count' => $subject->chapters_count ?? 0,
+                    'chapters_count' => $totalChapters,
+                    'completed_chapters_count' => $completedChapters,
+                    'is_completed' => $isCompleted,
+                    'progress_percent' => $progressPct,
                     'created_at' => $subject->created_at,
                 ];
             }),

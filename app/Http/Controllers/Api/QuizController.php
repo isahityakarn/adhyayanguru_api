@@ -69,6 +69,13 @@ class QuizController extends Controller
 
         // 2. Quiz presence check
         $quiz = Quiz::where('chapter_id', $chapterId)->where('is_published', true)->first();
+
+        // Auto-generate quiz if completed and not created yet
+        if (!$quiz && $chapterCompleted) {
+            ProgressController::ensureQuizForChapter((int) $chapterId);
+            $quiz = Quiz::where('chapter_id', $chapterId)->where('is_published', true)->first();
+        }
+
         $quizAvailable = (bool) $quiz;
 
         // 3. Quiz unlocked condition: Chapter completed
@@ -119,6 +126,11 @@ class QuizController extends Controller
         $chapter = Chapter::with('subject.classLevel')->findOrFail($chapterId);
 
         $quiz = Quiz::where('chapter_id', $chapterId)->where('is_published', true)->first();
+
+        if (!$quiz) {
+            ProgressController::ensureQuizForChapter((int) $chapterId);
+            $quiz = Quiz::where('chapter_id', $chapterId)->where('is_published', true)->first();
+        }
 
         if (!$quiz) {
             return response()->json([

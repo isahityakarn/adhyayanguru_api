@@ -17,11 +17,12 @@ class AiQuestionService
      * Models to try in order of priority.
      */
     protected array $models = [
-        'gemini-3.8-flash',
-        'gemini-3.7-flash',
-        'gemini-3.5-flash',
-        'gemini-3.1-flash-lite',
+        'gemini-1.5-flash',
+        'gemini-2.0-flash',
     ];
+
+    protected static bool $geminiFailed = false;
+    protected static bool $hfFailed = false;
 
     /**
      * Generate comprehensive questions from chapter content using AI.
@@ -751,65 +752,82 @@ PROMPT;
 
     protected function callGeminiApi(string $apiKey, string $prompt): ?array
     {
-        foreach ($this->models as $model) {
-            try {
-                $response = Http::timeout(180)
-                    ->post("https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}", [
-                        'contents' => [
-                            [
-                                'parts' => [
-                                    ['text' => $prompt],
+        if (!self::$geminiFailed) {
+            foreach ($this->models as $model) {
+                try {
+                    $response = Http::timeout(5)->connectTimeout(3)
+                        ->post("https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}", [
+                            'contents' => [
+                                [
+                                    'parts' => [
+                                        ['text' => $prompt],
+                                    ],
                                 ],
                             ],
+                            'generationConfig' => [
+                                'temperature' => 0.5,
+                                'topK' => 40,
+                                'topP' => 0.95,
+                                'maxOutputTokens' => 4096,
+                            ],
+                        ]);
+
+                    if ($response->successful()) {
+                        $responseData = $response->json();
+                        $text = $responseData['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                        $parsed = $this->cleanAndParseJson($text);
+
+                        if (!empty($parsed) && is_array($parsed)) {
+                            return $parsed;
+                        }
+                    } else {
+                        // Rate limit or not found, don't keep hammering
+                        if (in_array($response->status(), [404, 429, 401, 403])) {
+                            self::$geminiFailed = true;
+                        }
+                    }
+                } catch (\Exception $e) {
+                    Log::warning("Gemini model {$model} error: " . $e->getMessage());
+                    self::$geminiFailed = true;
+                    break;
+                }
+            }
+        }
+
+        // --- HUGGING FACE FALLBACK ---
+        if (!self::$hfFailed) {
+            try {
+                $hfApiKey = env('HUGGINGFACE_API_KEY');
+                $endpoint = 'https://router.huggingface.co/hf-inference/v1/chat/completions';
+                
+                $headers = ['Content-Type' => 'application/json'];
+                if (!empty($hfApiKey)) {
+                    $headers['Authorization'] = 'Bearer ' . $hfApiKey;
+                }
+
+                $response = Http::timeout(5)->connectTimeout(3)
+                    ->withHeaders($headers)
+                    ->post($endpoint, [
+                        'model' => 'XHToken/Spark-X2.5-4B',
+                        'messages' => [
+                            ['role' => 'user', 'content' => $prompt]
                         ],
-                        'generationConfig' => [
-                            'temperature' => 0.5,
-                            'topK' => 40,
-                            'topP' => 0.95,
-                            'maxOutputTokens' => 4096,
-                        ],
+                        'temperature' => 0.5,
+                        'max_tokens' => 4096,
                     ]);
 
                 if ($response->successful()) {
                     $responseData = $response->json();
-                    $text = $responseData['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                    $text = $responseData['choices'][0]['message']['content'] ?? '';
                     $parsed = $this->cleanAndParseJson($text);
 
                     if (!empty($parsed) && is_array($parsed)) {
                         return $parsed;
                     }
+                } else {
+                    self::$hfFailed = true;
                 }
             } catch (\Exception $e) {
-                Log::warning("Gemini model {$model} error: " . $e->getMessage());
-            }
-        }
-
-        // --- HUGGING FACE FALLBACK ---
-        Log::info('Gemini failed to generate questions, falling back to Hugging Face Spark-X2.5-4B...');
-        try {
-            $hfApiKey = env('HUGGINGFACE_API_KEY');
-            $endpoint = 'https://router.huggingface.co/hf-inference/v1/chat/completions';
-            
-            $headers = ['Content-Type' => 'application/json'];
-            if (!empty($hfApiKey)) {
-                $headers['Authorization'] = 'Bearer ' . $hfApiKey;
-            }
-
-            $response = Http::timeout(180)
-                ->withHeaders($headers)
-                ->post($endpoint, [
-                    'model' => 'XHToken/Spark-X2.5-4B',
-                    'messages' => [
-                        ['role' => 'user', 'content' => $prompt]
-                    ],
-                    'temperature' => 0.5,
-                    'max_tokens' => 4096,
-                ]);
-
-            if ($response->successful()) {
-                $responseData = $response->json();
-                $text = $responseData['choices'][0]['message']['content'] ?? '';
-                $parsed = $this->cleanAndParseJson($text);
 
                 if (!empty($parsed) && is_array($parsed)) {
                     return $parsed;

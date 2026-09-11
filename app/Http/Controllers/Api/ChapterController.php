@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Chapter;
+use App\Models\Progress;
 use Illuminate\Http\Request;
 
 class ChapterController extends Controller
@@ -40,8 +41,18 @@ class ChapterController extends Controller
 
         $chapters = $query->orderBy('chapter_number')->get();
 
+        $user = $request->user() ?? auth('sanctum')->user();
+        $progressByChapter = collect();
+        if ($user) {
+            $progressByChapter = Progress::where('student_id', $user->id)
+                ->whereIn('chapter_id', $chapters->pluck('id'))
+                ->get()
+                ->keyBy('chapter_id');
+        }
+
         return response()->json([
-            'chapters' => $chapters->map(function ($chapter) {
+            'chapters' => $chapters->map(function ($chapter) use ($progressByChapter) {
+                $progress = $progressByChapter->get($chapter->id);
                 return [
                     'id' => $chapter->id,
                     'chapter_number' => $chapter->chapter_number,
@@ -53,6 +64,14 @@ class ChapterController extends Controller
                         'name' => $chapter->subject->name ?? '',
                     ],
                     'topics_count' => 0,
+                    'progress' => $progress ? [
+                        'id' => $progress->id,
+                        'status' => $progress->status,
+                        'percent_complete' => (int) $progress->percent_complete,
+                        'time_spent_seconds' => (int) $progress->time_spent_seconds,
+                        'formatted_time_spent' => $progress->formatted_time_spent,
+                        'completed_at' => $progress->completed_at ? $progress->completed_at->toIso8601String() : null,
+                    ] : null,
                     'created_at' => $chapter->created_at,
                 ];
             }),
