@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\ProgressController;
 use App\Http\Controllers\Api\SubjectController;
 use App\Http\Controllers\Api\QuizController;
 use App\Http\Controllers\Api\Admin\AdminQuizController;
+use App\Http\Controllers\Api\TestResultController;
 use Illuminate\Support\Facades\Route;
 
 // Public routes
@@ -85,6 +86,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/quiz-attempts/history', [QuizController::class, 'getAttemptHistory']);
     Route::post('/quiz/{quizAttemptId}/evaluate-written', [QuizController::class, 'evaluateSingleWritten']);
     Route::post('/quiz/{quizAttemptId}/evaluate-written-batch', [QuizController::class, 'evaluateBatchWritten']);
+
+    // Student Subject & Chapter Test Results Routes (MCQ and Subjective breakdown)
+    Route::get('/student/test-results', [TestResultController::class, 'index']);
+    Route::get('/student/test-results/attempt/{attemptId}', [TestResultController::class, 'getAttemptDetail']);
+    Route::get('/test-results', [TestResultController::class, 'index']);
+    Route::get('/test-results/{attemptId}', [TestResultController::class, 'getAttemptDetail']);
 
     // Admin routes
     Route::prefix('admin')->middleware(['admin', 'throttle:api'])->group(function () {
