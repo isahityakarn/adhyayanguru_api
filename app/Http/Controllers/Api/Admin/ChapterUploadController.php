@@ -1,6 +1,5 @@
 <?php
 
-namespace App\Services;
 namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
@@ -11,6 +10,7 @@ use App\Models\QuizWrittenQuestion;
 use App\Models\Subject;
 use App\Services\AiQuestionService;
 use App\Services\PdfExtractorService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -19,6 +19,10 @@ use Illuminate\Support\Facades\Log;
 
 class ChapterUploadController extends Controller
 {
+    public function __construct(
+        protected PdfExtractorService $pdfExtractor,
+        protected AiQuestionService $aiQuestionService
+    ) {}
     /**
      * Display the upload form initial data (classes and subjects).
      */
@@ -89,231 +93,412 @@ class ChapterUploadController extends Controller
     /**
      * Upload PDF and automatically extract chapter content and generate questions into DB.
      */
-    public function upload(Request $request)
+    public function upload(Request $request): JsonResponse
     {
-        $allFiles = $request->allFiles();
-        $pdfFile = $request->file('pdf_file') ?: ($request->file('file') ?: ($request->file('pdf') ?: (reset($allFiles) ?: null)));
-        $rawBase64 = $request->input('pdf_base64') ?: ($request->input('file_base64') ?: ($request->input('base64') ?: null));
+        // 1. Resolve PDF input (uploaded file or base64)
+        $pdfInput = $this->resolvePdfInput($request);
 
-        $hasFile = $pdfFile !== null;
-        $hasBase64 = !empty($rawBase64);
-
-        if (!$hasFile && !$hasBase64) {
-            // Check if PHP discarded file due to upload_max_filesize across any upload field
-            foreach ($_FILES as $f) {
-                if (isset($f['error']) && $f['error'] === UPLOAD_ERR_INI_SIZE) {
-                    return response()->json([
-                        'message' => 'The uploaded PDF file exceeded PHP upload limits. Please retry with the automatic in-browser uploader.',
-                        'errors' => [
-                            'pdf_file' => ['File size exceeds server upload limits. Automatic base64 mode will now process it.'],
-                        ],
-                    ], 422);
-                }
-            }
-
-            return response()->json([
-                'message' => 'Please provide a PDF file.',
-                'errors' => [
-                    'pdf_file' => ['The PDF document is required.'],
-                ],
-            ], 422);
+        // 2. Validate PDF presence (detect missing file or PHP ini-size violations)
+        $presenceError = $this->validatePdfPresence($pdfInput);
+        if ($presenceError) {
+            return $presenceError;
         }
 
-        if ((!$request->filled('class_id') || $request->input('class_id') === '') && $request->filled('subject_id')) {
-            $subject = Subject::find($request->input('subject_id'));
-            if ($subject) {
-                $request->merge(['class_id' => $subject->class_id]);
-            }
-        }
+        // 3. Provide fallback defaults for missing class/subject
+        $this->normalizeClassAndSubject($request);
 
-        if (!$request->filled('class_id') || $request->input('class_id') === '') {
-            $firstClass = ClassLevel::orderBy('id')->first();
-            if ($firstClass) {
-                $request->merge(['class_id' => $firstClass->id]);
-            }
-        }
-
-        if (!$request->filled('subject_id') || $request->input('subject_id') === '') {
-            $classId = $request->input('class_id');
-            $firstSubject = Subject::where('class_id', $classId)->first() ?: Subject::orderBy('id')->first();
-            if ($firstSubject) {
-                $request->merge(['subject_id' => $firstSubject->id, 'class_id' => $firstSubject->class_id]);
-            }
-        }
-
+        // 4. Validate fields
         $request->validate([
-            'class_id' => ['required', 'exists:class_levels,id'],
-            'subject_id' => ['required', 'exists:subjects,id'],
+            'class_id'       => ['required', 'exists:class_levels,id'],
+            'subject_id'     => ['required', 'exists:subjects,id'],
             'chapter_number' => ['required', 'integer', 'min:1'],
-            'title' => ['required', 'string', 'max:255'],
-            'description' => ['nullable', 'string'],
+            'title'          => ['required', 'string', 'max:255'],
+            'description'    => ['nullable', 'string'],
         ]);
 
         try {
-            // Verify subject belongs to class
-            $subject = Subject::with('classLevel')->findOrFail($request->subject_id);
-            if ($subject->class_id != $request->class_id) {
-                return response()->json([
-                    'message' => 'Subject does not belong to the selected class.',
-                ], 422);
+            // 5. Verify subject belongs to the selected class
+            $subject = $this->validateSubjectBelongsToClass(
+                (int) $request->class_id,
+                (int) $request->subject_id
+            );
+            if ($subject instanceof JsonResponse) {
+                return $subject;
             }
 
             $relativeDir = "{$request->class_id}/{$request->subject_id}";
-            $targetDir1 = storage_path($relativeDir);
-            $targetDir2 = storage_path("app/{$relativeDir}");
-            $targetDir3 = storage_path("app/public/{$relativeDir}");
-            $targetDir4 = public_path("{$relativeDir}");
 
-            foreach ([$targetDir1, $targetDir2, $targetDir3, $targetDir4] as $dir) {
-                if (! File::exists($dir)) {
-                    File::makeDirectory($dir, 0775, true, true);
-                }
-            }
+            // 6. Store PDF (creates directories, compresses, and syncs to all storage paths)
+            $filename = $this->storePdfFile($request, $relativeDir, $pdfInput);
 
-            // Ensure public class symlink exists for direct Nginx web server access
-            $publicClassDir = public_path((string)$request->class_id);
-            $storageClassDir = storage_path("app/{$request->class_id}");
-            if (! File::exists($publicClassDir) && File::exists($storageClassDir)) {
-                @symlink($storageClassDir, $publicClassDir);
-            }
+            // 7. Persist chapter record
+            $chapter = $this->saveChapterRecord($request, $filename);
 
-            if ($hasFile && $pdfFile) {
-                $originalName = pathinfo($pdfFile->getClientOriginalName(), PATHINFO_FILENAME);
-                $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $originalName);
-                $filename = 'chapter_' . time() . '_' . $safeName . '.' . ($pdfFile->getClientOriginalExtension() ?: 'pdf');
+            // 8. Run AI pipeline (text extraction → pages → questions)
+            $this->processChapterAiPipeline($chapter, $subject, "{$relativeDir}/{$filename}");
 
-                $tempPdfPath = "{$targetDir1}/temp_{$filename}";
-                $pdfFile->move($targetDir1, "temp_{$filename}");
-                
-                // Compress PDF using Ghostscript
-                $gsCommand = "gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/screen -dNOPAUSE -dQUIET -dBATCH -sOutputFile=" . escapeshellarg("{$targetDir1}/{$filename}") . " " . escapeshellarg($tempPdfPath);
-                exec($gsCommand);
-                
-                if (file_exists("{$targetDir1}/{$filename}") && filesize("{$targetDir1}/{$filename}") > 0) {
-                    @unlink($tempPdfPath);
-                } else {
-                    rename($tempPdfPath, "{$targetDir1}/{$filename}");
-                }
-
-                // Duplicate to all target paths
-                File::copy("{$targetDir1}/{$filename}", "{$targetDir2}/{$filename}");
-                File::copy("{$targetDir1}/{$filename}", "{$targetDir3}/{$filename}");
-                File::copy("{$targetDir1}/{$filename}", "{$targetDir4}/{$filename}");
-            } else {
-                // Base64 upload
-                $originalName = $request->input('pdf_name', 'chapter_' . $request->chapter_number);
-                $originalName = pathinfo($originalName, PATHINFO_FILENAME);
-                $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $originalName);
-                $filename = 'chapter_' . time() . '_' . $safeName . '.pdf';
-
-                $cleanBase64 = preg_replace('#^data:application/\w+;base64,#i', '', $rawBase64);
-                $binaryData = base64_decode($cleanBase64);
-
-                if (empty($binaryData)) {
-                    return response()->json([
-                        'message' => 'Could not decode PDF data. Please try again.',
-                    ], 422);
-                }
-                
-                $tempPdfPath = "{$targetDir1}/temp_{$filename}";
-                File::put($tempPdfPath, $binaryData);
-                
-                // Compress PDF using Ghostscript
-                $gsCommand = "gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/screen -dNOPAUSE -dQUIET -dBATCH -sOutputFile=" . escapeshellarg("{$targetDir1}/{$filename}") . " " . escapeshellarg($tempPdfPath);
-                exec($gsCommand);
-                
-                if (file_exists("{$targetDir1}/{$filename}") && filesize("{$targetDir1}/{$filename}") > 0) {
-                    @unlink($tempPdfPath);
-                } else {
-                    rename($tempPdfPath, "{$targetDir1}/{$filename}");
-                }
-
-                File::put("{$targetDir2}/{$filename}", file_get_contents("{$targetDir1}/{$filename}"));
-                File::put("{$targetDir3}/{$filename}", file_get_contents("{$targetDir1}/{$filename}"));
-                File::put("{$targetDir4}/{$filename}", file_get_contents("{$targetDir1}/{$filename}"));
-            }
-
-            // Create or update chapter record
-            $userId = $request->user() ? $request->user()->id : 1;
-
-            $chapter = Chapter::updateOrCreate(
-                [
-                    'subject_id' => $request->subject_id,
-                    'chapter_number' => $request->chapter_number,
-                ],
-                [
-                    'title' => $request->title,
-                    'description' => $request->description,
-                    'source_file_url' => $filename,
-                    'created_by' => $userId,
-                ]
-            );
-
-            // 1. Extract PDF text content
-            $pdfExtractor = app(PdfExtractorService::class);
-            $extractedText = $pdfExtractor->extractText("{$relativeDir}/{$filename}");
-
-            $questionsSaved = [];
-            $pagesSaved = [];
-
-            if (! empty($extractedText)) {
-                $chapter->extracted_text = $extractedText;
-                $chapter->processed_at = now();
-                $chapter->save();
-
-                // 2. Extract and save pages to chapter_pages table
-                $aiQuestionService = app(AiQuestionService::class);
-                $pagesSaved = $aiQuestionService->extractAndSavePages($chapter->id, "{$relativeDir}/{$filename}");
-
-                // 3. Generate 50 MCQs and 20 Subjective Questions using AI and save directly into `questions` DB table
-                $generatedQuestions = $aiQuestionService->generateQuestionsForChapter(
-                    $extractedText,
-                    $chapter->title,
-                    $subject->name,
-                    [
-                        'mcq_count' => 50,
-                        'subjective_count' => 20,
-                    ]
-                );
-
-                if (! empty($generatedQuestions)) {
-                    $saveResult = $aiQuestionService->saveQuestionsToDatabase($chapter->id, $generatedQuestions, true);
-                    $questionsSaved = $saveResult['questions'] ?? [];
-                }
-            }
-
-            // Refresh chapter from database with relations
+            // 9. Reload relations and return formatted response
             $chapter->load(['subject.classLevel', 'pages']);
 
-            return response()->json([
+            $summary = $this->formatChapterSummary($chapter, $subject, $request->class_id);
+
+            // Surface a soft warning if AI question generation silently failed
+            $aiWarning = null;
+            if (empty($chapter->questions) && ! empty($chapter->extracted_text)) {
+                $aiWarning = 'Chapter saved successfully, but AI question generation failed (API may be overloaded). Use the Reprocess button to try again.';
+            }
+
+            $responseBody = [
                 'message' => 'Chapter PDF uploaded, content extracted, and questions saved into database successfully!',
-                'chapter' => [
-                    'id' => $chapter->id,
-                    'title' => $chapter->title,
-                    'chapter_number' => $chapter->chapter_number,
-                    'subject' => $subject->name,
-                    'class' => $subject->classLevel->name ?? 'Class ' . $request->class_id,
-                    'source_file_url' => $chapter->source_file_url,
-                    'has_extracted_text' => ! empty($chapter->extracted_text),
-                    'text_length' => strlen($chapter->extracted_text ?? ''),
-                    'text_preview' => mb_substr($chapter->extracted_text ?? '', 0, 400, 'UTF-8'),
-                    'questions_count' => is_array($chapter->questions) ? count($chapter->questions) : 0,
-                    'pages_count' => $chapter->pages()->count(),
-                    'processed_at' => $chapter->processed_at,
-                    'questions' => $chapter->questions,
-                ],
-            ], 201);
-        } catch (\Exception $e) {
+                'chapter' => $summary,
+            ];
+            if ($aiWarning) {
+                $responseBody['ai_warning'] = $aiWarning;
+            }
+
+            return response()->json($responseBody, 201);
+
+        } catch (\Throwable $e) {
             Log::error('Chapter upload and DB ingestion failed', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
-                'message' => 'Failed to upload and process chapter.',
-                'error' => $e->getMessage(),
+                'success' => false,
+                'message' => 'Failed to upload and process chapter: ' . $e->getMessage(),
+                'error'   => $e->getMessage(),
             ], 500);
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Private helper methods extracted from upload()
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Resolve the PDF source from the request: either an uploaded file
+     * or a raw base64 string, checking multiple possible field names.
+     *
+     * @return array{file: ?\Illuminate\Http\UploadedFile, base64: ?string}
+     */
+    private function resolvePdfInput(Request $request): array
+    {
+        $allFiles = $request->allFiles();
+        $pdfFile  = $request->file('pdf_file')
+            ?? $request->file('file')
+            ?? $request->file('pdf')
+            ?? (reset($allFiles) ?: null);
+
+        $rawBase64 = $request->input('pdf_base64')
+            ?? $request->input('file_base64')
+            ?? $request->input('base64');
+
+        return [
+            'file'   => $pdfFile,
+            'base64' => $rawBase64 ?: null,
+        ];
+    }
+
+    /**
+     * Return a 422 JsonResponse if no PDF was provided, handling the special
+     * case where PHP silently discarded the file due to upload_max_filesize.
+     */
+    private function validatePdfPresence(array $pdfInput): ?JsonResponse
+    {
+        if ($pdfInput['file'] !== null || ! empty($pdfInput['base64'])) {
+            return null; // input is present – nothing to do
+        }
+
+        // Check if PHP discarded the file because it exceeded upload_max_filesize
+        foreach ($_FILES as $f) {
+            if (isset($f['error']) && $f['error'] === UPLOAD_ERR_INI_SIZE) {
+                return response()->json([
+                    'message' => 'The uploaded PDF file exceeded PHP upload limits. Please retry with the automatic in-browser uploader.',
+                    'errors'  => [
+                        'pdf_file' => ['File size exceeds server upload limits. Automatic base64 mode will now process it.'],
+                    ],
+                ], 422);
+            }
+        }
+
+        return response()->json([
+            'message' => 'Please provide a PDF file.',
+            'errors'  => [
+                'pdf_file' => ['The PDF document is required.'],
+            ],
+        ], 422);
+    }
+
+    /**
+     * Fill in missing class_id or subject_id from sensible defaults
+     * so that validation can succeed without forcing the caller to provide both.
+     */
+    private function normalizeClassAndSubject(Request $request): void
+    {
+        // Derive class_id from the given subject_id when omitted
+        if ((! $request->filled('class_id') || $request->input('class_id') === '') && $request->filled('subject_id')) {
+            $subject = Subject::find($request->input('subject_id'));
+            if ($subject) {
+                $request->merge(['class_id' => $subject->class_id]);
+            }
+        }
+
+        // Fall back to the first available class
+        if (! $request->filled('class_id') || $request->input('class_id') === '') {
+            $firstClass = ClassLevel::orderBy('id')->first();
+            if ($firstClass) {
+                $request->merge(['class_id' => $firstClass->id]);
+            }
+        }
+
+        // Fall back to the first subject in the resolved class
+        if (! $request->filled('subject_id') || $request->input('subject_id') === '') {
+            $firstSubject = Subject::where('class_id', $request->input('class_id'))->first()
+                ?? Subject::orderBy('id')->first();
+            if ($firstSubject) {
+                $request->merge([
+                    'subject_id' => $firstSubject->id,
+                    'class_id'   => $firstSubject->class_id,
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Load the Subject model and ensure it belongs to the given class.
+     * Returns the Subject on success or a 422 JsonResponse on mismatch.
+     *
+     * @return Subject|JsonResponse
+     */
+    private function validateSubjectBelongsToClass(int $classId, int $subjectId): Subject|JsonResponse
+    {
+        $subject = Subject::with('classLevel')->findOrFail($subjectId);
+
+        if ($subject->class_id != $classId) {
+            return response()->json([
+                'message' => 'Subject does not belong to the selected class.',
+            ], 422);
+        }
+
+        return $subject;
+    }
+
+    /**
+     * Create all required storage directories (4 paths + public symlink).
+     *
+     * @return array{dir1: string, dir2: string, dir3: string, dir4: string}
+     */
+    private function ensureStorageDirectories(string $relativeDir, int $classId): array
+    {
+        $dirs = [
+            'dir1' => storage_path($relativeDir),
+            'dir2' => storage_path("app/{$relativeDir}"),
+            'dir3' => storage_path("app/public/{$relativeDir}"),
+            'dir4' => public_path($relativeDir),
+        ];
+
+        foreach ($dirs as $dir) {
+            if (! File::exists($dir)) {
+                File::makeDirectory($dir, 0775, true, true);
+            }
+        }
+
+        // Ensure a public symlink exists for direct Nginx / web-server access
+        $publicClassDir  = public_path((string) $classId);
+        $storageClassDir = storage_path("app/{$classId}");
+        if (! File::exists($publicClassDir) && File::exists($storageClassDir)) {
+            @symlink($storageClassDir, $publicClassDir);
+        }
+
+        return $dirs;
+    }
+
+    /**
+     * Build a timestamped, filesystem-safe filename for the PDF.
+     */
+    private function generateSafePdfFilename(string $originalName, string $ext = 'pdf'): string
+    {
+        $baseName = pathinfo($originalName, PATHINFO_FILENAME);
+        $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $baseName);
+        return 'chapter_' . time() . '_' . $safeName . '.' . ($ext ?: 'pdf');
+    }
+
+    /**
+     * Run Ghostscript to compress a PDF at $srcPath and write output to $destPath.
+     * If compression produces an empty file, the source is used as-is (via rename).
+     */
+    private function compressPdfWithGhostscript(string $srcPath, string $destPath): void
+    {
+        $gsCommand = 'gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/screen'
+            . ' -dNOPAUSE -dQUIET -dBATCH'
+            . ' -sOutputFile=' . escapeshellarg($destPath)
+            . ' ' . escapeshellarg($srcPath);
+
+        exec($gsCommand);
+
+        if (file_exists($destPath) && filesize($destPath) > 0) {
+            @unlink($srcPath); // remove temp file on success
+        } else {
+            rename($srcPath, $destPath); // fall back to original if compression failed
+        }
+    }
+
+    /**
+     * Copy the master PDF from dir1 to the remaining storage directories.
+     */
+    private function syncToStorageDirectories(string $masterPath, string $filename, array $dirs): void
+    {
+        $dir1 = $dirs['dir1'];
+
+        File::copy("{$dir1}/{$filename}", "{$dirs['dir2']}/{$filename}");
+        File::copy("{$dir1}/{$filename}", "{$dirs['dir3']}/{$filename}");
+        File::copy("{$dir1}/{$filename}", "{$dirs['dir4']}/{$filename}");
+    }
+
+    /**
+     * Handle file storage: create directories, write the PDF (from uploaded file
+     * or base64), compress it with Ghostscript, and sync to all storage paths.
+     *
+     * @return string The final filename (not the full path)
+     */
+    private function storePdfFile(Request $request, string $relativeDir, array $pdfInput): string
+    {
+        $dirs = $this->ensureStorageDirectories($relativeDir, (int) $request->class_id);
+        $dir1 = $dirs['dir1'];
+
+        /** @var \Illuminate\Http\UploadedFile|null $pdfFile */
+        $pdfFile   = $pdfInput['file'];
+        $rawBase64 = $pdfInput['base64'];
+
+        if ($pdfFile !== null) {
+            // ── Uploaded file path ────────────────────────────────────────────
+            $filename    = $this->generateSafePdfFilename(
+                $pdfFile->getClientOriginalName(),
+                $pdfFile->getClientOriginalExtension()
+            );
+            $tempPath    = "{$dir1}/temp_{$filename}";
+            $pdfFile->move($dir1, "temp_{$filename}");
+        } else {
+            // ── Base64 path ───────────────────────────────────────────────────
+            $originalName = $request->input('pdf_name', 'chapter_' . $request->chapter_number);
+            $filename     = $this->generateSafePdfFilename($originalName);
+            $cleanBase64  = preg_replace('#^data:application/\w+;base64,#i', '', $rawBase64);
+            $binaryData   = base64_decode($cleanBase64);
+
+            if (empty($binaryData)) {
+                // Throw so the outer try-catch can return a generic 500
+                throw new \RuntimeException('Could not decode PDF data. Please try again.');
+            }
+
+            $tempPath = "{$dir1}/temp_{$filename}";
+            File::put($tempPath, $binaryData);
+        }
+
+        // Compress and write the final PDF
+        $this->compressPdfWithGhostscript($tempPath, "{$dir1}/{$filename}");
+
+        // Sync the compressed file to the other three storage locations
+        $this->syncToStorageDirectories("{$dir1}/{$filename}", $filename, $dirs);
+
+        return $filename;
+    }
+
+    /**
+     * Create or update the Chapter database record.
+     */
+    private function saveChapterRecord(Request $request, string $filename): Chapter
+    {
+        $userId = $request->user()?->id ?? 1;
+
+        return Chapter::updateOrCreate(
+            [
+                'subject_id'     => $request->subject_id,
+                'chapter_number' => $request->chapter_number,
+            ],
+            [
+                'title'           => $request->title,
+                'description'     => $request->description,
+                'source_file_url' => $filename,
+                'created_by'      => $userId,
+            ]
+        );
+    }
+
+    /**
+     * Run the full AI pipeline for a chapter:
+     *   1. Extract text from the PDF.
+     *   2. Persist pages to chapter_pages.
+     *   3. Generate & save MCQ + Short-Answer questions via AI.
+     *
+     * Text extraction errors are re-thrown (they indicate a file problem).
+     * AI generation failures are caught and logged — the upload still succeeds
+     * and questions can be generated later via the /reprocess endpoint.
+     */
+    private function processChapterAiPipeline(Chapter $chapter, Subject $subject, string $relativeFilePath): void
+    {
+        $extractedText = $this->pdfExtractor->extractText($relativeFilePath);
+
+        if (empty($extractedText)) {
+            return;
+        }
+
+        $chapter->extracted_text = $extractedText;
+        $chapter->processed_at   = now();
+        $chapter->save();
+
+        // Extract and persist individual pages (non-fatal if it fails)
+        try {
+            $this->aiQuestionService->extractAndSavePages($chapter->id, $relativeFilePath);
+        } catch (\Throwable $e) {
+            Log::warning('Page extraction failed for chapter, continuing upload', [
+                'chapter_id' => $chapter->id,
+                'error'      => $e->getMessage(),
+            ]);
+        }
+
+        // Generate questions — failure here must NOT abort the upload
+        try {
+            $generatedQuestions = $this->aiQuestionService->generateQuestionsForChapter(
+                $extractedText,
+                $chapter->title,
+                $subject->name,
+                ['mcq_count' => 50, 'subjective_count' => 20]
+            );
+
+            if (! empty($generatedQuestions)) {
+                $this->aiQuestionService->saveQuestionsToDatabase($chapter->id, $generatedQuestions, true);
+            }
+        } catch (\Throwable $e) {
+            // Log as warning — the chapter is saved; questions can be generated
+            // later via POST /api/admin/chapters/{id}/reprocess
+            Log::warning('AI question generation failed during upload — chapter saved without questions', [
+                'chapter_id' => $chapter->id,
+                'error'      => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Build the chapter data array used in the upload() 201 response.
+     */
+    private function formatChapterSummary(Chapter $chapter, Subject $subject, mixed $classId): array
+    {
+        return [
+            'id'                => $chapter->id,
+            'title'             => $chapter->title,
+            'chapter_number'    => $chapter->chapter_number,
+            'subject'           => $subject->name,
+            'class'             => $subject->classLevel->name ?? 'Class ' . $classId,
+            'source_file_url'   => $chapter->source_file_url,
+            'has_extracted_text'=> ! empty($chapter->extracted_text),
+            'text_length'       => strlen($chapter->extracted_text ?? ''),
+            'text_preview'      => mb_substr($chapter->extracted_text ?? '', 0, 400, 'UTF-8'),
+            'questions_count'   => is_array($chapter->questions) ? count($chapter->questions) : 0,
+            'pages_count'       => $chapter->pages()->count(),
+            'processed_at'      => $chapter->processed_at,
+            'questions'         => $chapter->questions,
+        ];
     }
 
     /**
@@ -334,8 +519,7 @@ class ChapterUploadController extends Controller
             $path = "{$relativeDir}/{$chapter->source_file_url}";
 
             // 1. Extract PDF text
-            $pdfExtractor = app(PdfExtractorService::class);
-            $extractedText = $pdfExtractor->extractText($path);
+            $extractedText = $this->pdfExtractor->extractText($path);
 
             if (! $extractedText) {
                 return response()->json([
@@ -348,11 +532,10 @@ class ChapterUploadController extends Controller
             $chapter->save();
 
             // 2. Extract pages to chapter_pages
-            $aiQuestionService = app(AiQuestionService::class);
-            $aiQuestionService->extractAndSavePages($chapter->id, $path);
+            $this->aiQuestionService->extractAndSavePages($chapter->id, $path);
 
             // 3. Generate 50 MCQs and 20 Subjective Questions and save in `questions` table
-            $generatedQuestions = $aiQuestionService->generateQuestionsForChapter(
+            $generatedQuestions = $this->aiQuestionService->generateQuestionsForChapter(
                 $extractedText,
                 $chapter->title,
                 $chapter->subject->name ?? '',
@@ -362,7 +545,7 @@ class ChapterUploadController extends Controller
                 ]
             );
 
-            $saveResult = $aiQuestionService->saveQuestionsToDatabase($chapter->id, $generatedQuestions, true);
+            $saveResult = $this->aiQuestionService->saveQuestionsToDatabase($chapter->id, $generatedQuestions, true);
 
             // Clear cache
             Cache::forget("chapter_text_{$chapter->id}");
@@ -415,9 +598,8 @@ class ChapterUploadController extends Controller
 
             $content = $chapter->extracted_text;
             if (empty($content) && $chapter->source_file_url) {
-                $pdfExtractor = app(PdfExtractorService::class);
-                $path = "{$chapter->subject->class_id}/{$chapter->subject_id}/{$chapter->source_file_url}";
-                $content = $pdfExtractor->extractText($path);
+                $path    = "{$chapter->subject->class_id}/{$chapter->subject_id}/{$chapter->source_file_url}";
+                $content = $this->pdfExtractor->extractText($path);
                 if ($content) {
                     $chapter->extracted_text = $content;
                     $chapter->save();
@@ -432,18 +614,17 @@ class ChapterUploadController extends Controller
 
             $replaceExisting = $request->boolean('replace_existing', false);
 
-            $aiQuestionService = app(AiQuestionService::class);
-            $generated = $aiQuestionService->generateQuestionsForChapter(
+            $generated = $this->aiQuestionService->generateQuestionsForChapter(
                 $content,
                 $chapter->title,
                 $chapter->subject->name ?? '',
                 [
-                    'mcq_count' => $request->input('mcq_count', 50),
+                    'mcq_count'        => $request->input('mcq_count', 50),
                     'subjective_count' => $request->input('subjective_count', 20),
                 ]
             );
 
-            $saveResult = $aiQuestionService->saveQuestionsToDatabase($chapter->id, $generated, $replaceExisting);
+            $saveResult = $this->aiQuestionService->saveQuestionsToDatabase($chapter->id, $generated, $replaceExisting);
 
             $allQuestions = is_array($chapter->questions) ? collect($chapter->questions) : collect([]);
 
@@ -709,37 +890,35 @@ class ChapterUploadController extends Controller
             ]);
         }
 
-        $pdfExtractor = app(PdfExtractorService::class);
-        $aiQuestionService = app(AiQuestionService::class);
         $results = [];
 
         foreach ($chapters as $ch) {
             try {
                 $relativeDir = "{$ch->subject->class_id}/{$ch->subject_id}";
-                $path = "{$relativeDir}/{$ch->source_file_url}";
+                $path        = "{$relativeDir}/{$ch->source_file_url}";
 
-                $extractedText = $pdfExtractor->extractText($path);
+                $extractedText = $this->pdfExtractor->extractText($path);
 
                 if (! empty($extractedText)) {
                     $ch->extracted_text = $extractedText;
-                    $ch->processed_at = now();
+                    $ch->processed_at   = now();
                     $ch->save();
 
                     // Pages
-                    $aiQuestionService->extractAndSavePages($ch->id, $path);
+                    $this->aiQuestionService->extractAndSavePages($ch->id, $path);
 
                     // Questions
-                    $generated = $aiQuestionService->generateQuestionsForChapter(
+                    $generated = $this->aiQuestionService->generateQuestionsForChapter(
                         $extractedText,
                         $ch->title,
                         $ch->subject->name ?? '',
                         [
-                            'mcq_count' => 50,
+                            'mcq_count'        => 50,
                             'subjective_count' => 20,
                         ]
                     );
 
-                    $aiQuestionService->saveQuestionsToDatabase($ch->id, $generated, true);
+                    $this->aiQuestionService->saveQuestionsToDatabase($ch->id, $generated, true);
 
                     $questionsInDb = is_array($ch->questions) ? count($ch->questions) : 0;
 

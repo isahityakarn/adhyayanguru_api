@@ -299,7 +299,7 @@ class AiTutorController extends Controller
             if (strlen($content) > 7000) {
                 $content = substr($content, 0, 7000) . '... [content truncated for length]';
             }
-            $contextParts[] = "Textbook chapter content is provided below. Use this as your primary source of truth to teach the student:\n\n{$content}\n";
+            $contextParts[] = "The following is the chapter content from the student's textbook, provided as helpful reference context. Use it when it's relevant, but you are NOT limited to it — answer any question the student asks using your full knowledge as an expert tutor:\n\n{$content}\n";
         }
 
         // PDF / Chapter Content Language Detection
@@ -334,14 +334,27 @@ class AiTutorController extends Controller
             }
         }
 
-        $contextParts[] = "\nTUTOR GUIDELINES:
+        // When reading is requested, replace the generic guidelines with read-specific ones
+        // so that guideline #3 ("you are a tutor, not a book-reader") does NOT override the
+        // CRITICAL READ ALOUD instruction added above.
+        if ($isReadIntent && !empty($pdfContent)) {
+            $contextParts[] = "\nREAD ALOUD GUIDELINES:
+1. Start reading the chapter content from the very beginning.
+2. Present the text paragraph-by-paragraph in a clear, natural reading voice.
+3. Do NOT summarize, paraphrase, or skip any part — read the actual words from the textbook.
+4. After finishing each section, briefly pause and say something like \"(continuing...)\" before the next section.
+5. Always be warm and encouraging!";
+        } else {
+            $contextParts[] = "\nTUTOR GUIDELINES:
 1. Explain step-by-step in an engaging, easy-to-understand conversational tone.
 2. Use bullet points, bold keywords, and practical real-life examples.
-3. If the student asks a question about the chapter, answer it accurately using the textbook content.
-4. If the student asks for a summary, provide key definitions, formulas, and main takeaways.
-5. NO RAW LATEX OR DOLLAR SIGNS: Do NOT write mathematical formulas with LaTeX markup or dollar signs (e.g. NEVER write '\$10 \\text{Ones}\$' or '\$\$...\$\$'). Always write all math, equations, numbers, and place value relations in clean, readable plain text (e.g. '10 Ones (इकाई) = 1 Ten (दहाई) = 10', '10 × 10 = 100').
-6. FORMAT TABLES: When creating place value charts or tables, format them using clean markdown tables.
-7. Always be positive, supportive, and encourage curiosity!";
+3. Answer ANY question the student asks — whether it is about the chapter, a related concept, general knowledge, or any other topic. NEVER refuse to answer or say 'this is not in the book'. You are a knowledgeable tutor, not a book-reader.
+4. When the student's question relates to the chapter content, use it as reference to give an accurate, contextual answer. For questions beyond the chapter, draw from your own knowledge freely.
+5. If the student asks for a summary, provide key definitions, formulas, and main takeaways.
+6. NO RAW LATEX OR DOLLAR SIGNS: Do NOT write mathematical formulas with LaTeX markup or dollar signs (e.g. NEVER write '\$10 \\text{Ones}\$' or '\$\$...\$\$'). Always write all math, equations, numbers, and place value relations in clean, readable plain text (e.g. '10 Ones (इकाई) = 1 Ten (दहाई) = 10', '10 × 10 = 100').
+7. FORMAT TABLES: When creating place value charts or tables, format them using clean markdown tables.
+8. Always be positive, supportive, and encourage curiosity!";
+        }
 
         return implode("\n", $contextParts);
     }
@@ -383,67 +396,142 @@ class AiTutorController extends Controller
     }
 
     /**
-     * Generate structured educational fallback if all Gemini endpoints are offline.
+     * Generate educational fallback when all AI APIs are offline.
+     * First tries to find a relevant answer inside the chapter content.
+     * Only falls back to a generic summary when no relevant passage is found.
      */
     private function generateEducationalFallback(string $message, array $context): string
     {
-        $subject = !empty($context['subject']) && $context['subject'] !== 'the subject' ? $context['subject'] : 'सामान्य अध्ययन';
-        $chapter = !empty($context['chapter']) && $context['chapter'] !== 'this chapter' ? $context['chapter'] : 'अध्याय';
-        $isHindi = str_starts_with(strtolower($context['language'] ?? 'hi'), 'hi');
-        $voiceId = strtolower($context['voice_id'] ?? $context['voice'] ?? 'edge_tts_hindi_female');
-        $isFemale = str_contains($voiceId, 'female') || str_contains($voiceId, 'swara');
+        $subject   = !empty($context['subject']) && $context['subject'] !== 'the subject' ? $context['subject'] : 'General Studies';
+        $chapter   = !empty($context['chapter']) && $context['chapter'] !== 'this chapter' ? $context['chapter'] : 'Chapter';
+        $isHindi   = str_starts_with(strtolower($context['language'] ?? 'en'), 'hi');
+        $voiceId   = strtolower($context['voice_id'] ?? $context['voice'] ?? 'edge_tts_hindi_female');
+        $isFemale  = str_contains($voiceId, 'female') || str_contains($voiceId, 'swara');
         $tutorName = $isFemale ? ($isHindi ? 'संस्कृति' : 'Sanskriti') : ($isHindi ? 'अध्ययन' : 'Adhyayan');
 
-        $contentSummary = "";
+        // ── Step 1: Extract and clean chapter content ────────────────────────
+        $rawContent = '';
         if (!empty($context['chapter_content'])) {
-            $rawText = strip_tags($context['chapter_content']);
-            $rawText = preg_replace('/\[सिस्टम संदेश:[^\]]+\]/u', '', $rawText);
-            $rawText = trim($rawText);
-            if (strlen($rawText) > 400) {
-                $contentSummary = substr($rawText, 0, 400) . "...";
-            } else if (!empty($rawText)) {
-                $contentSummary = $rawText;
-            }
+            $rawContent = strip_tags($context['chapter_content']);
+            $rawContent = preg_replace('/\[(?:SYSTEM MESSAGE|सिस्टम संदेश)[^\]]*\]/ui', '', $rawContent);
+            $rawContent = trim($rawContent);
         }
 
-        if ($isHindi) {
-            $reply = "नमस्ते! मैं {$tutorName} हूँ, आपकी AI शिक्षिका।\n\n" .
-                "📚 **विषय:** {$subject}\n" .
-                "📖 **अध्याय:** {$chapter}\n\n";
+        // ── Step 2: Detect read intent ─────────────────────────────────────
+        $isReadIntent = (bool) preg_match(
+            '/\b(read|read this|read chapter|read this chapter|padho|padao|padh ke|padh kar|padhein|recite|explain this pdf|explain pdf|read pdf|padh ke batao)\b/i',
+            $message
+        );
 
-            if (!empty($contentSummary)) {
-                $reply .= "### अध्याय का मुख्य सारांश:\n" .
-                    "{$contentSummary}\n\n" .
-                    "### मुख्य बिंदु:\n" .
-                    "1. **मूल अवधारणाएं:** इस अध्याय में दिए गए मुख्य सिद्धांतों, सूत्रों और परिभाषाओं को समझें।\n" .
-                    "2. **अभ्यास प्रश्न:** अध्याय के अंत में दिए गए प्रश्नों को हल करने का प्रयास करें।\n\n" .
-                    "आप मुझसे इस अध्याय के किसी भी प्रश्न या परिभाषा के बारे में पूछ सकते हैं!";
+        // ── Step 3: Handle read request — return actual chapter text ─────────
+        if ($isReadIntent && !empty($rawContent)) {
+            // Deliver up to 2000 chars of chapter text (enough for one TTS reading session)
+            $readChunk = mb_substr($rawContent, 0, 2000, 'UTF-8');
+            $hasMore   = mb_strlen($rawContent, 'UTF-8') > 2000;
+
+            if ($isHindi) {
+                return "बिल्कुल! मैं अभी अध्याय \"{$chapter}\" पढ़ता/पढ़ती हूँ:\n\n---\n\n{$readChunk}" .
+                    ($hasMore ? "\n\n---\n_(यह अध्याय का पहला भाग है। आगे पढ़ने के लिए \"आगे पढ़ो\" कहें।)_" : '');
+            }
+            return "Sure! Here is the chapter \"{$chapter}\":\n\n---\n\n{$readChunk}" .
+                ($hasMore ? "\n\n---\n_(This is the first part of the chapter. Say \"continue reading\" to hear more.)_" : '');
+        }
+
+        // ── Step 4: Try to extract a relevant passage for the question ────────
+        $extractedAnswer = '';
+        if (!empty($rawContent) && !empty($message)) {
+            $extractedAnswer = $this->extractRelevantPassage($message, $rawContent);
+        }
+
+        // ── Step 3a: Specific answer found ───────────────────────────────────
+        if (!empty($extractedAnswer)) {
+            if ($isHindi) {
+                return "**{$message}**\n\n" .
+                    "{$extractedAnswer}\n\n" .
+                    "_(यह उत्तर पाठ्यपुस्तक के अध्याय \"{$chapter}\" से लिया गया है।)_\n\n" .
+                    "कोई और प्रश्न हो तो पूछें! 😊";
+            }
+            return "**{$message}**\n\n" .
+                "{$extractedAnswer}\n\n" .
+                "_(Answer sourced from the textbook chapter: \"{$chapter}\".)_\n\n" .
+                "Feel free to ask me more questions! 😊";
+        }
+
+        // ── Step 3b: Nothing found — generic chapter snippet response ─────────
+        $snippet = !empty($rawContent) ? mb_substr($rawContent, 0, 350, 'UTF-8') . '...' : '';
+
+        if ($isHindi) {
+            $reply = "नमस्ते! मैं {$tutorName} हूँ।\n\n📚 **विषय:** {$subject} | 📖 **अध्याय:** {$chapter}\n\n";
+            if (!empty($snippet)) {
+                $reply .= "### अध्याय का परिचय:\n{$snippet}\n\nआप मुझसे इस अध्याय के किसी भी प्रश्न के बारे में पूछ सकते हैं!";
             } else {
-                $reply .= "### अध्याय की मुख्य बातें:\n" .
-                    "1. **अवधारणा (Concept):** यह अध्याय **{$chapter}** के मुख्य विषयों को प्रस्तुत करता है।\n" .
-                    "2. **महत्वपूर्ण बिंदु:** परिभाषाओं, सूत्रों और आरेखों (Diagrams) पर विशेष ध्यान दें।\n" .
-                    "3. **प्रश्न उत्तर:** इस अध्याय से संबंधित किसी भी विशिष्ट प्रश्न को मुझसे पूछें, मैं विस्तार से समझाऊंगी!";
+                $reply .= "आप मुझसे इस अध्याय के किसी भी प्रश्न के बारे में पूछ सकते हैं।";
             }
             return $reply;
         }
 
-        $reply = "Hello! I am {$tutorName}, your AI Tutor.\n\n" .
-            "📚 **Subject:** {$subject}\n" .
-            "📖 **Chapter:** {$chapter}\n\n";
-
-        if (!empty($contentSummary)) {
-            $reply .= "### Chapter Summary:\n" .
-                "{$contentSummary}\n\n" .
-                "Feel free to ask me specific questions about any formula, definition, or exercise problem from this chapter!";
+        $reply = "Hello! I am {$tutorName}, your AI Tutor.\n\n📚 **Subject:** {$subject} | 📖 **Chapter:** {$chapter}\n\n";
+        if (!empty($snippet)) {
+            $reply .= "### Chapter Excerpt:\n{$snippet}\n\nFeel free to ask me specific questions about this chapter!";
         } else {
-            $reply .= "### Key Overview of {$chapter}:\n" .
-                "1. **Core Concept:** Review the fundamental definitions and key principles in this chapter.\n" .
-                "2. **Step-by-Step Understanding:** Focus on practice exercises and key formulas.\n\n" .
-                "Feel free to ask me any specific question about this chapter!";
+            $reply .= "Feel free to ask me any specific question about this chapter!";
         }
-
         return $reply;
     }
+
+    /**
+     * Extract the most relevant sentences from chapter content for a given question.
+     * Uses simple keyword-overlap scoring — no external API needed.
+     *
+     * @return string Top-3 matching sentences in reading order, or '' if nothing matched.
+     */
+    private function extractRelevantPassage(string $question, string $content): string
+    {
+        $stopWords = [
+            'is','are','was','were','the','a','an','in','on','at','to','for','of',
+            'and','or','but','what','who','how','why','when','where','does','do',
+            'did','with','from','by','that','this','it','he','she','they','his',
+            'her','its','क्या','कौन','कहाँ','कब','कैसे','का','की','के','है','हैं',
+        ];
+
+        $words    = preg_split('/\W+/u', strtolower($question), -1, PREG_SPLIT_NO_EMPTY);
+        $keywords = array_values(array_unique(
+            array_filter($words, fn($w) => mb_strlen($w) > 2 && !in_array($w, $stopWords))
+        ));
+
+        if (empty($keywords)) {
+            return '';
+        }
+
+        // Split content into sentences on common sentence-ending punctuation
+        $sentences = preg_split('/(?<=[.!?।])\s+/u', $content, -1, PREG_SPLIT_NO_EMPTY);
+
+        $scored = [];
+        foreach ($sentences as $i => $sentence) {
+            $lower = strtolower($sentence);
+            $score = 0;
+            foreach ($keywords as $kw) {
+                if (str_contains($lower, $kw)) {
+                    $score++;
+                }
+            }
+            if ($score > 0) {
+                $scored[] = ['sentence' => trim($sentence), 'score' => $score, 'index' => $i];
+            }
+        }
+
+        if (empty($scored)) {
+            return '';
+        }
+
+        // Pick top 3 by score, then re-sort by original position for natural reading order
+        usort($scored, fn($a, $b) => $b['score'] <=> $a['score']);
+        $top = array_slice($scored, 0, 3);
+        usort($top, fn($a, $b) => $a['index'] <=> $b['index']);
+
+        return implode(' ', array_column($top, 'sentence'));
+    }
+
 
     /**
      * Generate explanations for topics using AI.

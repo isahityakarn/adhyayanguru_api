@@ -64,6 +64,9 @@ return Application::configure(basePath: dirname(__DIR__))
         });
         $exceptions->render(function (\Throwable $exception, Request $request) {
             if (! $request->is('api/*') || $exception instanceof \Symfony\Component\HttpKernel\Exception\HttpException) return null;
-            return response()->json(['success' => false, 'message' => 'Something went wrong'], 500);
+            return response()->json([
+                'success' => false,
+                'message' => config('app.debug') ? $exception->getMessage() : 'Something went wrong',
+            ], 500);
         });
     })->create();

@@ -828,13 +828,9 @@ PROMPT;
                     self::$hfFailed = true;
                 }
             } catch (\Exception $e) {
-
-                if (!empty($parsed) && is_array($parsed)) {
-                    return $parsed;
-                }
+                Log::warning("HF Spark model error: " . $e->getMessage());
+                self::$hfFailed = true;
             }
-        } catch (\Exception $e) {
-            Log::warning("HF Spark model error: " . $e->getMessage());
         }
 
         return null;
