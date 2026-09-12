@@ -17,8 +17,6 @@ use App\Http\Controllers\Api\TestResultController;
 use Illuminate\Support\Facades\Route;
 
 // Public routes
-Route::post('/send-otp', [AuthController::class, 'sendOtp']);
-Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
 Route::post('/auth/send-otp', [AuthController::class, 'sendOtp']);
 Route::post('/auth/verify-otp', [AuthController::class, 'verifyOtp']);
 Route::post('/signup', [AuthController::class, 'signup']);
@@ -28,21 +26,11 @@ Route::get('/class-levels', [ClassLevelController::class, 'index']);
 Route::get('/subjects', [SubjectController::class, 'index']);
 Route::get('/chapters', [ChapterController::class, 'index']);
 Route::get('/plans', [PlanController::class, 'index']);
-Route::post('/coqui-tts', [AiTutorController::class, 'coquiTts']);
-Route::post('/ai-tutor/coqui-tts', [AiTutorController::class, 'coquiTts']);
-Route::post('/edge-tts', [AiTutorController::class, 'edgeTts']);
-Route::post('/ai-tutor/edge-tts', [AiTutorController::class, 'edgeTts']);
 
 // Protected routes
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/user', [AuthController::class, 'getUser']);
-
-    // Chapter Quiz System Routes (Student)
-    Route::get('/chapters/{chapterId}/completion', [QuizController::class, 'getChapterCompletion']);
-    Route::get('/chapters/{chapterId}/quiz/status', [QuizController::class, 'getQuizStatus']);
-    Route::get('/chapters/{chapterId}/quiz', [QuizController::class, 'getQuiz']);
-    Route::post('/chapters/{chapterId}/quiz/start', [QuizController::class, 'startQuiz']);
 
     Route::get('/chapters/{id}', [ChapterController::class, 'show']);
 
@@ -52,7 +40,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/update', [ProgressController::class, 'updateProgress']);
         Route::get('/chapter/{chapterId}', [ProgressController::class, 'getChapterProgress']);
         Route::get('/parent-report', [ProgressController::class, 'parentReport']);
-        Route::get('/summary', [ProgressController::class, 'parentReport']);
     });
 
     // AI Tutor routes (support both /tutor and /ai-tutor endpoints)
@@ -90,8 +77,6 @@ Route::middleware('auth:sanctum')->group(function () {
     // Student Subject & Chapter Test Results Routes (MCQ and Subjective breakdown)
     Route::get('/student/test-results', [TestResultController::class, 'index']);
     Route::get('/student/test-results/attempt/{attemptId}', [TestResultController::class, 'getAttemptDetail']);
-    Route::get('/test-results', [TestResultController::class, 'index']);
-    Route::get('/test-results/{attemptId}', [TestResultController::class, 'getAttemptDetail']);
 
     // Admin routes
     Route::prefix('admin')->middleware(['admin', 'throttle:api'])->group(function () {
