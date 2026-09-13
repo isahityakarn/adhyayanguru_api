@@ -6,19 +6,21 @@ use App\Http\Controllers\Controller;
 use App\Models\Chapter;
 use App\Models\Subject;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class AiTutorController extends Controller
 {
     /**
-     * Gemini models in order of priority (Real Google Gemini models).
+     * Gemini models in order of priority — confirmed working on this API key.
      */
     private array $candidateModels = [
-        'gemini-1.5-flash',
-        'gemini-2.0-flash',
-        'gemini-1.5-flash-8b',
-        'gemini-1.5-pro',
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
+        'gemini-flash-latest',
     ];
 
     private static bool $geminiFailed = false;
@@ -91,9 +93,31 @@ class AiTutorController extends Controller
 
         $history = $request->input('conversation_history') ?? $request->input('messages') ?? [];
 
+        // ── Resolve the local PDF path for this chapter (for Gemini File API) ──
+        $pdfLocalPath = null;
+        if (!empty($context['chapter_id'])) {
+            $chapterForPdf = isset($chapterModel) ? $chapterModel : Chapter::with('subject')->find($context['chapter_id']);
+            if ($chapterForPdf && $chapterForPdf->source_file_url && $chapterForPdf->subject) {
+                $classId   = $chapterForPdf->subject->class_id ?? null;
+                $subjectId = $chapterForPdf->subject_id ?? null;
+                if ($classId && $subjectId) {
+                    $relativePath = "{$classId}/{$subjectId}/{$chapterForPdf->source_file_url}";
+                    $candidate = storage_path("app/{$relativePath}");
+                    if (file_exists($candidate)) {
+                        $pdfLocalPath = $candidate;
+                    } else {
+                        $candidate2 = storage_path("app/public/{$relativePath}");
+                        if (file_exists($candidate2)) {
+                            $pdfLocalPath = $candidate2;
+                        }
+                    }
+                }
+            }
+        }
+
         try {
             // Build the context for the AI
-            $systemContext = $this->buildSystemContext($context, $message);
+            $systemContext = $this->buildSystemContext($context, $message, $history);
 
             // Build conversation history
             $conversationHistory = $this->buildConversationHistory(
@@ -107,13 +131,13 @@ class AiTutorController extends Controller
                 'parts' => [['text' => $message]],
             ];
 
-            // 1. Primary AI Engine: Google Gemini API
+            // 1. Primary AI Engine: Google Gemini API (with PDF if available)
             $aiResponse = $this->callGeminiApi($conversationHistory, [
                 'temperature' => 0.7,
                 'topK' => 40,
                 'topP' => 0.95,
                 'maxOutputTokens' => 2048,
-            ]);
+            ], $pdfLocalPath, $context['chapter_id'] ?? null);
 
             // 2. Secondary AI Engine: Fallback to Hugging Face Spark
             if (empty($aiResponse)) {
@@ -210,13 +234,14 @@ class AiTutorController extends Controller
 
     /**
      * Call Gemini API with fast multi-model resilient fallback.
+     *
+     * When $pdfLocalPath is supplied the PDF is uploaded to Gemini File API once
+     * (result cached for ~47 hours, Gemini Files expire after 48 h) and the file
+     * URI is injected into the user's message so Gemini reads the actual PDF —
+     * exactly like attaching a file in Gemini.ai or ChatGPT.
      */
-    private function callGeminiApi(array $contents, array $generationConfig = []): ?string
+    private function callGeminiApi(array $contents, array $generationConfig = [], ?string $pdfLocalPath = null, int|string|null $chapterId = null): ?string
     {
-        if (self::$geminiFailed) {
-            return null;
-        }
-
         $apiKey = config('services.gemini.api_key');
 
         if (empty($apiKey)) {
@@ -224,38 +249,59 @@ class AiTutorController extends Controller
             return null;
         }
 
+        // ── Attach PDF to the last user message via Gemini File API ──────────
+        if ($pdfLocalPath && $chapterId) {
+            $fileUri  = $this->getOrUploadChapterPdf($pdfLocalPath, $chapterId, $apiKey);
+            if ($fileUri) {
+                // Find the last user message and prepend the PDF file part
+                $lastIdx = null;
+                foreach ($contents as $i => $msg) {
+                    if (($msg['role'] ?? '') === 'user') {
+                        $lastIdx = $i;
+                    }
+                }
+                if ($lastIdx !== null) {
+                    $existingParts = $contents[$lastIdx]['parts'];
+                    $contents[$lastIdx]['parts'] = array_merge(
+                        [['file_data' => ['mime_type' => 'application/pdf', 'file_uri' => $fileUri]]],
+                        $existingParts
+                    );
+                }
+            }
+        }
+
         foreach ($this->candidateModels as $model) {
             try {
                 $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
-                $response = Http::timeout(6)
-                    ->connectTimeout(3)
-                    ->post($url, [
-                        'contents' => $contents,
-                        'generationConfig' => !empty($generationConfig) ? $generationConfig : [
-                            'temperature' => 0.7,
-                            'topK' => 40,
-                            'topP' => 0.95,
-                            'maxOutputTokens' => 2048,
-                        ],
-                    ]);
+                // Use native PHP cURL to avoid Guzzle/Laravel DNS resolution issues on some servers
+                $responseBody = $this->curlPost($url, [
+                    'contents' => $contents,
+                    'generationConfig' => !empty($generationConfig) ? $generationConfig : [
+                        'temperature' => 0.7,
+                        'topK' => 40,
+                        'topP' => 0.95,
+                        'maxOutputTokens' => 2048,
+                    ],
+                ], 20);
 
-                if ($response->successful()) {
-                    $responseData = $response->json();
-                    $text = $responseData['candidates'][0]['content']['parts'][0]['text'] ?? null;
-                    if (!empty($text)) {
-                        return trim($text);
-                    }
+                if ($responseBody === null) {
+                    Log::warning("Gemini model {$model}: cURL request failed");
+                    continue;
                 }
 
-                // Log failure and try next model
-                Log::warning("Gemini model {$model} failed: " . $response->status() . " - " . substr($response->body(), 0, 150));
+                $responseData = json_decode($responseBody, true);
+                $text = $responseData['candidates'][0]['content']['parts'][0]['text'] ?? null;
+
+                if (!empty($text)) {
+                    return trim($text);
+                }
+
+                $errorMsg = $responseData['error']['message'] ?? substr($responseBody, 0, 150);
+                Log::warning("Gemini model {$model} returned no text: {$errorMsg}");
+
             } catch (\Exception $ex) {
                 Log::warning("Gemini request exception on {$model}: " . $ex->getMessage());
-                if (str_contains($ex->getMessage(), 'cURL') || str_contains($ex->getMessage(), 'timed out') || str_contains($ex->getMessage(), 'Could not resolve')) {
-                    self::$geminiFailed = true;
-                    return null;
-                }
             }
         }
 
@@ -263,9 +309,182 @@ class AiTutorController extends Controller
     }
 
     /**
-     * Build system context based on the provided context data.
+     * Perform a POST request using native PHP cURL.
+     * This bypasses Guzzle's DNS resolver which can time out on some server configs.
+     *
+     * @return string|null Response body, or null on failure.
      */
-    private function buildSystemContext(?array $context, string $message = ''): string
+    private function curlPost(string $url, array $payload, int $timeoutSeconds = 20): ?string
+    {
+        $jsonBody = json_encode($payload);
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $jsonBody,
+            CURLOPT_TIMEOUT        => $timeoutSeconds,
+            CURLOPT_CONNECTTIMEOUT => 8,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+        $response = curl_exec($ch);
+        $err      = curl_error($ch);
+        curl_close($ch);
+
+        if ($response === false) {
+            Log::warning("curlPost failed for {$url}: {$err}");
+            return null;
+        }
+        return $response;
+    }
+
+    /**
+     * Return a cached Gemini File URI for the chapter PDF, uploading it first if needed.
+     *
+     * Gemini Files are valid for 48 hours after upload. We cache for 47 hours so we
+     * always have a usable URI without the overhead of re-uploading on every request.
+     */
+    private function getOrUploadChapterPdf(string $localPath, int|string $chapterId, string $apiKey): ?string
+    {
+        $cacheKey = "gemini_file_uri_chapter_{$chapterId}";
+
+        $cached = Cache::get($cacheKey);
+        if ($cached) {
+            // Verify the file still exists on Gemini (lightweight GET via cURL)
+            try {
+                $ch = curl_init("https://generativelanguage.googleapis.com/v1beta/{$cached}?key={$apiKey}");
+                curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 6]);
+                $body = curl_exec($ch);
+                curl_close($ch);
+                if ($body) {
+                    $data  = json_decode($body, true);
+                    $state = $data['state'] ?? $data['file']['state'] ?? null;
+                    if ($state === 'ACTIVE' || $state === null) {
+                        return $data['uri'] ?? $data['file']['uri'] ?? $cached;
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::warning("Gemini file check failed: " . $e->getMessage());
+            }
+            Cache::forget($cacheKey);
+        }
+
+        $uri = $this->uploadPdfToGemini($localPath, $apiKey);
+        if ($uri) {
+            Cache::put($cacheKey, $uri, now()->addHours(47));
+        }
+        return $uri;
+    }
+
+    /**
+     * Upload a local PDF file to the Gemini File API using the resumable upload protocol.
+     * Returns the file URI on success, null on failure.
+     */
+    private function uploadPdfToGemini(string $localPath, string $apiKey): ?string
+    {
+        if (!file_exists($localPath)) {
+            Log::warning("Gemini PDF upload: file not found at {$localPath}");
+            return null;
+        }
+
+        $fileSize    = filesize($localPath);
+        $displayName = basename($localPath);
+
+        try {
+            // Step 1: Initiate resumable upload — get upload URL
+            $ch = curl_init("https://generativelanguage.googleapis.com/upload/v1beta/files?key={$apiKey}");
+            $initBody = json_encode(['file' => ['display_name' => $displayName]]);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $initBody,
+                CURLOPT_TIMEOUT        => 15,
+                CURLOPT_CONNECTTIMEOUT => 8,
+                CURLOPT_HEADER         => true,
+                CURLOPT_HTTPHEADER     => [
+                    'Content-Type: application/json',
+                    'X-Goog-Upload-Protocol: resumable',
+                    'X-Goog-Upload-Command: start',
+                    'X-Goog-Upload-Header-Content-Length: ' . $fileSize,
+                    'X-Goog-Upload-Header-Content-Type: application/pdf',
+                ],
+            ]);
+            $initiateRaw  = curl_exec($ch);
+            $headerSize   = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+            $initiateCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if (!$initiateRaw || $initiateCode >= 400) {
+                Log::warning("Gemini File API initiate failed (HTTP {$initiateCode})");
+                return null;
+            }
+
+            // Extract upload URL from response headers
+            $headers    = substr($initiateRaw, 0, $headerSize);
+            $uploadUrl  = null;
+            foreach (explode("\r\n", $headers) as $line) {
+                if (stripos($line, 'x-goog-upload-url:') === 0) {
+                    $uploadUrl = trim(substr($line, strlen('x-goog-upload-url:')));
+                    break;
+                }
+            }
+
+            if (empty($uploadUrl)) {
+                Log::warning("Gemini File API: no upload URL in response headers");
+                return null;
+            }
+
+            // Step 2: Upload the file bytes
+            $fileContents = file_get_contents($localPath);
+            $ch2 = curl_init($uploadUrl);
+            curl_setopt_array($ch2, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $fileContents,
+                CURLOPT_TIMEOUT        => 120,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_HTTPHEADER     => [
+                    'Content-Length: ' . $fileSize,
+                    'Content-Type: application/pdf',
+                    'X-Goog-Upload-Offset: 0',
+                    'X-Goog-Upload-Command: upload, finalize',
+                ],
+            ]);
+            $uploadRaw  = curl_exec($ch2);
+            $uploadCode = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
+            $uploadErr  = curl_error($ch2);
+            curl_close($ch2);
+
+            if (!$uploadRaw || $uploadCode >= 400) {
+                Log::warning("Gemini File API upload failed (HTTP {$uploadCode}): {$uploadErr}");
+                return null;
+            }
+
+            $responseJson = json_decode($uploadRaw, true);
+            $uri = $responseJson['file']['uri'] ?? $responseJson['uri'] ?? null;
+
+            if (empty($uri)) {
+                Log::warning("Gemini File API: no URI in upload response: " . substr($uploadRaw, 0, 300));
+                return null;
+            }
+
+            Log::info("Gemini File API: PDF uploaded successfully. URI={$uri}");
+            return $uri;
+
+        } catch (\Exception $e) {
+            Log::warning("Gemini File API upload exception: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Build system context based on the provided context data.
+     *
+     * @param array|null $context
+     * @param string $message     Current user message
+     * @param array  $history     Full conversation history (to detect persistent Hindi intent)
+     */
+    private function buildSystemContext(?array $context, string $message = '', array $history = []): string
     {
         $voiceId = strtolower($context['voice_id'] ?? $context['voice'] ?? 'edge_tts_hindi_female');
         $isFemale = str_contains($voiceId, 'female') || str_contains($voiceId, 'swara');
@@ -308,6 +527,21 @@ class AiTutorController extends Controller
 
         $combinedText = strtolower($message . ' ' . ($context['message'] ?? ''));
 
+        // ── Also scan recent conversation history for a persistent Hindi instruction ──
+        // If the student asked for Hindi in the last 6 messages, honour it for this turn too.
+        $hindiPattern = '/(hindi|हिंदी|हिन्दी|explain in hindi|in hindi|samjhao|batao|spasht|kya hai|kaise)/i';
+        $recentHistory = array_slice($history, -6);
+        $historyHasHindiRequest = false;
+        foreach ($recentHistory as $histMsg) {
+            $histText = $histMsg['content'] ?? $histMsg['text'] ?? '';
+            $histRole = $histMsg['role'] ?? '';
+            // Only look at user messages for explicit Hindi requests
+            if (in_array($histRole, ['user']) && preg_match($hindiPattern, $histText)) {
+                $historyHasHindiRequest = true;
+                break;
+            }
+        }
+
         // Check if user requested "read", "read this", "read this chapter", "padho", "padao", etc.
         $isReadIntent = preg_match('/\b(read|read this|read chapter|read this chapter|padho|padao|padh ke|padh kar|padhein|recite|explain this pdf|explain pdf|read pdf|padh ke batao)\b/i', $combinedText);
 
@@ -325,10 +559,11 @@ class AiTutorController extends Controller
                 str_contains($voiceId, 'hindi') ||
                 str_contains($voiceId, 'swara') ||
                 str_contains($voiceId, 'madhur') ||
+                $historyHasHindiRequest ||
                 preg_match('/(hindi|हिंदी|हिन्दी|hinglish|samjhao|batao|spasht|explain in hindi|in hindi|kya hai|kaise)/i', $combinedText);
 
             if ($isHindiRequested) {
-                $contextParts[] = "CRITICAL LANGUAGE INSTRUCTION: The student wants explanations in HINDI (हिन्दी). You MUST write your entire explanation and response in clear, simple, warm HINDI (हिन्दी) script. Do NOT write in English!";
+                $contextParts[] = "CRITICAL LANGUAGE INSTRUCTION: The student wants explanations in HINDI (हिन्दी). You MUST write your ENTIRE response in clear, simple, warm HINDI (हिन्दी / Devanagari script). Do NOT write in English under any circumstances. Even technical terms should be explained in Hindi first.";
             } else {
                 $contextParts[] = "LANGUAGE INSTRUCTION: Reply in simple, clear Hindi (हिन्दी) or English based on the language used by the student in their message or the textbook content.";
             }
@@ -365,7 +600,12 @@ class AiTutorController extends Controller
     private function buildConversationHistory(array $history, string $systemContext): array
     {
         $messages = [];
-        $tutorName = str_contains(strtolower($systemContext), 'sanskriti') ? 'Sanskriti' : 'Adhyayan';
+        $isSanskriti = str_contains(strtolower($systemContext), 'sanskriti');
+        $tutorName = $isSanskriti ? 'Sanskriti' : 'Adhyayan';
+
+        // Detect if Hindi was requested from the system context itself
+        $isHindiContext = str_contains($systemContext, 'CRITICAL LANGUAGE INSTRUCTION')
+            || str_contains($systemContext, 'हिन्दी');
 
         // Add system context as the first user message with model response
         $messages[] = [
@@ -373,10 +613,20 @@ class AiTutorController extends Controller
             'parts' => [['text' => $systemContext]],
         ];
 
-        $messages[] = [
-            'role' => 'model',
-            'parts' => [['text' => "Namaste! I am {$tutorName}, your AI Tutor. I understand your instructions and I am ready to help the student learn with clear explanations, examples, and warm encouragement!"]],
-        ];
+        // Prime the model in Hindi when Hindi is requested — this is critical.
+        // An English priming reply makes Gemini default to English regardless of instructions.
+        if ($isHindiContext) {
+            $hindiTutorName = $isSanskriti ? 'संस्कृति' : 'अध्ययन';
+            $messages[] = [
+                'role' => 'model',
+                'parts' => [['text' => "नमस्ते! मैं {$hindiTutorName} हूँ, आपका AI शिक्षक। मैंने आपके निर्देश समझ लिए हैं। मैं पूरी तरह हिन्दी में उत्तर दूँगा/दूँगी और छात्र को सरल, स्पष्ट भाषा में समझाऊँगा/समझाऊँगी!"]],
+            ];
+        } else {
+            $messages[] = [
+                'role' => 'model',
+                'parts' => [['text' => "Namaste! I am {$tutorName}, your AI Tutor. I understand your instructions and I am ready to help the student learn with clear explanations, examples, and warm encouragement!"]],
+            ];
+        }
 
         // Add conversation history
         foreach ($history as $message) {
